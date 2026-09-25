@@ -1,0 +1,8 @@
+name: API mitigation test
+image: ppwcode/api-mitigation-test:1.0.0
+category: Testing
+description: Run Schemathesis and TraceCov with per-build evidence
+repository: https://github.com/ppwcode/api-mitigation-test
+variables:
+  - name: CONFIG
+    default: api-mitigation.yaml

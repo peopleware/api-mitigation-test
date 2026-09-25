@@ -1,0 +1,15 @@
+name: API mitigation test
+description: Run Schemathesis and TraceCov with durable per-build evidence
+inputs:
+  config:
+    description: Project-owned JSON or YAML configuration path
+    required: true
+runs:
+  using: docker
+  image: Dockerfile
+  args:
+    - --config
+    - ${{ inputs.config }}
+branding:
+  icon: shield
+  color: blue
