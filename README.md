@@ -1,6 +1,6 @@
 # API mitigation test
 
-Run [Schemathesis](https://schemathesis.readthedocs.io/en/latest/) against one OpenAPI target and collect [TraceCov](https://docs.tracecov.sh/) coverage. The Docker image, GitHub action, and Bitbucket pipe invoke the same `runner.py`. Version `1.0.0` is the Docker Hub tag and `v1` is the intended GitHub major-version tag. These names become usable after the repository and image are published.
+Run [Schemathesis](https://schemathesis.readthedocs.io/en/latest/) against one OpenAPI target and collect [TraceCov](https://docs.tracecov.sh/) coverage. The Docker image, GitHub action, and Bitbucket pipe invoke the same `runner.py`. Version `0.1.0` is the Docker Hub tag and `v0` is the intended GitHub major-version tag. These names become usable after the repository and image are published.
 
 The runner enables Schemathesis's normal examples, coverage, fuzzing, and stateful phases. **It sends state-changing requests.** Point it at an isolated test environment with disposable data and suitable credentials. A successful build identifies exactly what was verified; it does not prove that the whole system is vulnerability-free.
 
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: peopleware/api-mitigation-test@v1
+      - uses: peopleware/api-mitigation-test@v0
         with:
           config: tests/api-mitigation.yaml
         env:
@@ -64,7 +64,7 @@ pipelines:
     - step:
         name: API mitigation test
         script:
-          - pipe: docker://daviddkppw/api-mitigation-test:1.0.0
+          - pipe: docker://daviddkppw/api-mitigation-test:0.1.0
             variables:
               CONFIG: tests/api-mitigation.yaml
               API_MITIGATION_BEARER_TOKEN: $API_MITIGATION_BEARER_TOKEN
@@ -84,7 +84,7 @@ docker run --rm \
   -e API_MITIGATION_BUILD_ID=manual-2026-09-25-1 \
   -e API_MITIGATION_BEARER_TOKEN \
   -v "$PWD:/workspace" -w /workspace \
-  daviddkppw/api-mitigation-test:1.0.0 --config tests/api-mitigation.yaml
+  daviddkppw/api-mitigation-test:0.1.0 --config tests/api-mitigation.yaml
 ```
 
 The build ID is mandatory outside GitHub and Bitbucket. Each run creates `artifacts/<build-id>-<hash>/`. Set `API_MITIGATION_OUTPUT_DIR` to change the root. Reusing a build ID in the same root fails rather than overwriting evidence. The output includes `verdict.json`, `schemathesis.json`, `events.ndjson`, `junit.xml`, `coverage.html`, `coverage.json`, `console.log`, and `evidence.sqlite` when the tools produced them. The runner writes available evidence before returning a failure status.
@@ -97,7 +97,7 @@ The per-build SQLite database records build/component/config/schema identity and
 
 ## Development and release
 
-Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. Run `python scripts/version.py patch` (or pass a version or another supported bump) to update release references, create a version commit, and tag it `v<version>`. The working tree must be clean. Push the commit and exact version tag to trigger the release workflow, which publishes `daviddkppw/api-mitigation-test:<version>` and its Docker major tag, then moves the GitHub Action major tag (for example, `v1`) to the release commit. Consumers can use the public Docker image as a Bitbucket pipe directly with the `docker://` prefix shown above. Using a Bitbucket-hosted pipe repository reference or submitting it for Atlassian's official list requires separate Bitbucket-side setup. Publishing requires Docker Hub access plus the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and write access to the `peopleware/api-mitigation-test` GitHub repository.
+Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. Run `python scripts/version.py patch` (or pass a version or another supported bump) to update release references, create a version commit, and tag it `v<version>`. The working tree must be clean. Push the commit and exact version tag to trigger the release workflow, which publishes `daviddkppw/api-mitigation-test:<version>` and its Docker major tag, then moves the GitHub Action major tag (for example, `v0`) to the release commit. Consumers can use the public Docker image as a Bitbucket pipe directly with the `docker://` prefix shown above. Using a Bitbucket-hosted pipe repository reference or submitting it for Atlassian's official list requires separate Bitbucket-side setup. Publishing requires Docker Hub access plus the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and write access to the `peopleware/api-mitigation-test` GitHub repository.
 
 ## Glossary
 

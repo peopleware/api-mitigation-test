@@ -1,5 +1,5 @@
 name: API mitigation test
-image: daviddkppw/api-mitigation-test:1.0.0
+image: daviddkppw/api-mitigation-test:0.1.0
 category: Testing
 description: Run Schemathesis and TraceCov with per-build evidence
 repository: https://github.com/peopleware/api-mitigation-test
