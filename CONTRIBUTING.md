@@ -46,12 +46,11 @@ Run it against an isolated API reachable **from the container**, mount the confi
 
 ## Version and release
 
-Use semantic versions for the image and full Git release tag, such as `1.0.1` and `v1.0.1`. Treat config, output, or verdict changes that require consumers to change their setup as breaking changes. Before tagging:
+Use `python scripts/version.py <newversion|major|minor|patch|premajor|preminor|prepatch|prerelease>` to update the Docker version in `pipe.yml`, version references in the README and wrapper contract, then create a version commit and `v<version>` Git tag. The script reads the current version from `pipe.yml` and requires a clean working tree. Treat config, output, or verdict changes that require consumers to change their setup as breaking changes. Before running it:
 
 1. Run the Python suite and a Docker smoke test. Review the reports and SQLite evidence for consistency and token redaction.
-2. Update the image version in `pipe.yml` and the usage examples in `README.md`. Check that `action.yml` still invokes the same image implementation from this repository.
-3. Merge the release changes and create a `v<major>.<minor>.<patch>` tag on the intended commit. The workflow in `.github/workflows/release.yml` builds and pushes `daviddkppw/api-mitigation-test:<major>.<minor>.<patch>` and its Docker major tag.
-4. Verify the published Docker Hub digest and run the released image against the disposable test target. Keep the GitHub `v<major>` Action tag on the latest compatible release commit so `ppwcode/api-mitigation-test@v1` resolves as documented. Coordinate changes to an existing major tag with maintainers and consumers.
+2. Run the version script on the intended release commit. It creates the exact version tag locally; push the commit and tag to trigger `.github/workflows/release.yml`, which builds and pushes `daviddkppw/api-mitigation-test:<major>.<minor>.<patch>` and its Docker major tag.
+3. Verify the published Docker Hub digest and run the released image against the disposable test target. Move the GitHub `v<major>` Action tag to the latest compatible release commit and push it so `peopleware/api-mitigation-test@v<major>` resolves as documented. Coordinate changes to an existing major tag with maintainers and consumers.
 
 Publishing requires access to the GitHub repository, the Docker Hub namespace, and repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. A local Docker build does not publish an image. Do not claim a release is available until the image and Git tags are visible and verified.
 

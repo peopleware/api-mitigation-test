@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ppwcode/api-mitigation-test@v1
+      - uses: peopleware/api-mitigation-test@v1
         with:
           config: tests/api-mitigation.yaml
         env:
@@ -95,9 +95,9 @@ The runner fails on unexplained check failures, Schemathesis execution errors, i
 
 The per-build SQLite database records build/component/config/schema identity and SHA-256 hashes, tool versions, every schema operation and whether it was tested, scenario skips, observed cases and individual check results, matched exception details, the five coverage measures, and the final verdict. The raw event and coverage reports remain beside it for inspection.
 
-## Development
+## Development and release
 
-Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. The release workflow publishes `daviddkppw/api-mitigation-test:<version>` from a `v<version>` Git tag with `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets. Publishing the image requires Docker Hub access; publishing `ppwcode/api-mitigation-test@v1` requires access to that GitHub repository and major-version tag.
+Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. Run `python scripts/version.py patch` (or pass a version or another supported bump) to update release references, create a version commit, and tag it `v<version>`. The working tree must be clean. Push the commit and exact version tag to trigger the release workflow, which publishes `daviddkppw/api-mitigation-test:<version>` and its Docker major tag. After the image succeeds, move the GitHub Action major tag (for example, `v0`) to the release commit and push that tag. Publishing requires Docker Hub access plus the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and access to the `peopleware/api-mitigation-test` GitHub repository.
 
 ## Glossary
 
