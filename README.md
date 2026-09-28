@@ -18,6 +18,8 @@ min_parameters_coverage: 60
 min_keywords_coverage: 40
 min_examples_coverage: 0
 min_responses_coverage: 75
+# Optional: cap generated cases per operation in the stateful phase
+stateful_max_examples: 20
 check_exceptions:
   - method: POST
     path: /orders
@@ -26,6 +28,8 @@ check_exceptions:
     owner: API team
     expiry: '2026-12-31'
 ```
+
+`stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
 
 Exception fields are exact method, schema path, and Schemathesis failure type matches. All six fields are required. Expired exceptions never match. Original failure details remain in `events.ndjson`, `verdict.json`, and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Treat reports as sensitive test data because they may contain API payloads.
 

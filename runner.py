@@ -32,7 +32,7 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "stateful_max_examples"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
@@ -46,6 +46,9 @@ def read_config(path: Path) -> tuple[dict, bytes]:
         key = f"min_{dim}_coverage"
         if key in value and (isinstance(value[key], bool) or not isinstance(value[key], (int, float)) or not 0 <= value[key] <= 100):
             raise ValueError(f"{key} must be a number from 0 to 100")
+    stateful_max_examples = value.get("stateful_max_examples")
+    if stateful_max_examples is not None and (isinstance(stateful_max_examples, bool) or not isinstance(stateful_max_examples, int) or stateful_max_examples < 1):
+        raise ValueError("stateful_max_examples must be a positive integer")
     exceptions = value.get("check_exceptions", [])
     if not isinstance(exceptions, list):
         raise ValueError("check_exceptions must be a list")
@@ -249,6 +252,14 @@ def main() -> int:
                "--report-json-path", str(report_path), "--report-ndjson-path", str(events_path),
                "--report-junit-path", str(junit_path), "--coverage-format", "html,json",
                "--coverage-report-html-path", str(html_path), "--coverage-report-json-path", str(coverage_path), "--no-color"]
+        if config.get("stateful_max_examples") is not None:
+            schemathesis_config = build_dir / "schemathesis.toml"
+            schemathesis_config.write_text(
+                "[phases.stateful.generation]\n"
+                f"max-examples = {config['stateful_max_examples']}\n",
+                encoding="utf-8",
+            )
+            cmd = [executable, "--config-file", str(schemathesis_config), *cmd[1:]]
         with (build_dir / "console.log").open("w", encoding="utf-8") as log:
             process = subprocess.run(cmd, env=env, cwd=Path(__file__).parent, stdout=log, stderr=subprocess.STDOUT, check=False)
         token = os.environ.get("API_MITIGATION_BEARER_TOKEN")
