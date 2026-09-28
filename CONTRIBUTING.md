@@ -39,7 +39,7 @@ Do not turn missing events or absent check results into passing checks. A matchi
 With Docker running, build the candidate image before release:
 
 ```sh
-docker build -t ppwcode/api-mitigation-test:local .
+docker build -t daviddkppw/api-mitigation-test:local .
 ```
 
 Run it against an isolated API reachable **from the container**, mount the config and schema into the workspace, set a unique `API_MITIGATION_BUILD_ID`, and inspect `artifacts/<build-id>-<hash>/`. Check the process exit status, `verdict.json`, `evidence.sqlite`, JUnit, event stream, and TraceCov HTML/JSON. Repeat with a failing API or threshold and confirm that available evidence remains. Do not run this smoke test against production: normal Schemathesis phases include state-changing requests.
@@ -50,7 +50,7 @@ Use semantic versions for the image and full Git release tag, such as `1.0.1` an
 
 1. Run the Python suite and a Docker smoke test. Review the reports and SQLite evidence for consistency and token redaction.
 2. Update the image version in `pipe.yml` and the usage examples in `README.md`. Check that `action.yml` still invokes the same image implementation from this repository.
-3. Merge the release changes and create a `v<major>.<minor>.<patch>` tag on the intended commit. The workflow in `.github/workflows/release.yml` builds and pushes `ppwcode/api-mitigation-test:<major>.<minor>.<patch>` and its Docker major tag.
+3. Merge the release changes and create a `v<major>.<minor>.<patch>` tag on the intended commit. The workflow in `.github/workflows/release.yml` builds and pushes `daviddkppw/api-mitigation-test:<major>.<minor>.<patch>` and its Docker major tag.
 4. Verify the published Docker Hub digest and run the released image against the disposable test target. Keep the GitHub `v<major>` Action tag on the latest compatible release commit so `ppwcode/api-mitigation-test@v1` resolves as documented. Coordinate changes to an existing major tag with maintainers and consumers.
 
 Publishing requires access to the GitHub repository, the Docker Hub namespace, and repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. A local Docker build does not publish an image. Do not claim a release is available until the image and Git tags are visible and verified.

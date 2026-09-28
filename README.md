@@ -64,7 +64,7 @@ pipelines:
     - step:
         name: API mitigation test
         script:
-          - pipe: ppwcode/api-mitigation-test:1.0.0
+          - pipe: daviddkppw/api-mitigation-test:1.0.0
             variables:
               CONFIG: tests/api-mitigation.yaml
               API_MITIGATION_BEARER_TOKEN: $API_MITIGATION_BEARER_TOKEN
@@ -84,7 +84,7 @@ docker run --rm \
   -e API_MITIGATION_BUILD_ID=manual-2026-09-25-1 \
   -e API_MITIGATION_BEARER_TOKEN \
   -v "$PWD:/workspace" -w /workspace \
-  ppwcode/api-mitigation-test:1.0.0 --config tests/api-mitigation.yaml
+  daviddkppw/api-mitigation-test:1.0.0 --config tests/api-mitigation.yaml
 ```
 
 The build ID is mandatory outside GitHub and Bitbucket. Each run creates `artifacts/<build-id>-<hash>/`. Set `API_MITIGATION_OUTPUT_DIR` to change the root. Reusing a build ID in the same root fails rather than overwriting evidence. The output includes `verdict.json`, `schemathesis.json`, `events.ndjson`, `junit.xml`, `coverage.html`, `coverage.json`, `console.log`, and `evidence.sqlite` when the tools produced them. The runner writes available evidence before returning a failure status.
@@ -97,7 +97,7 @@ The per-build SQLite database records build/component/config/schema identity and
 
 ## Development
 
-Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. The release workflow publishes `ppwcode/api-mitigation-test:<version>` from a `v<version>` Git tag with `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets. Publishing the image requires Docker Hub access; publishing `ppwcode/api-mitigation-test@v1` requires access to that GitHub repository and major-version tag.
+Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. The release workflow publishes `daviddkppw/api-mitigation-test:<version>` from a `v<version>` Git tag with `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets. Publishing the image requires Docker Hub access; publishing `ppwcode/api-mitigation-test@v1` requires access to that GitHub repository and major-version tag.
 
 ## Glossary
 
