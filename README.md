@@ -64,7 +64,7 @@ pipelines:
     - step:
         name: API mitigation test
         script:
-          - pipe: daviddkppw/api-mitigation-test:1.0.0
+          - pipe: docker://daviddkppw/api-mitigation-test:1.0.0
             variables:
               CONFIG: tests/api-mitigation.yaml
               API_MITIGATION_BEARER_TOKEN: $API_MITIGATION_BEARER_TOKEN
@@ -97,7 +97,7 @@ The per-build SQLite database records build/component/config/schema identity and
 
 ## Development and release
 
-Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. Run `python scripts/version.py patch` (or pass a version or another supported bump) to update release references, create a version commit, and tag it `v<version>`. The working tree must be clean. Push the commit and exact version tag to trigger the release workflow, which publishes `daviddkppw/api-mitigation-test:<version>` and its Docker major tag. After the image succeeds, move the GitHub Action major tag (for example, `v0`) to the release commit and push that tag. Publishing requires Docker Hub access plus the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and access to the `peopleware/api-mitigation-test` GitHub repository.
+Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. Run `python scripts/version.py patch` (or pass a version or another supported bump) to update release references, create a version commit, and tag it `v<version>`. The working tree must be clean. Push the commit and exact version tag to trigger the release workflow, which publishes `daviddkppw/api-mitigation-test:<version>` and its Docker major tag, then moves the GitHub Action major tag (for example, `v1`) to the release commit. Consumers can use the public Docker image as a Bitbucket pipe directly with the `docker://` prefix shown above. Using a Bitbucket-hosted pipe repository reference or submitting it for Atlassian's official list requires separate Bitbucket-side setup. Publishing requires Docker Hub access plus the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and write access to the `peopleware/api-mitigation-test` GitHub repository.
 
 ## Glossary
 

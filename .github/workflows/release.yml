@@ -49,3 +49,23 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  action-tag:
+    name: Update GitHub Action major tag
+    needs: [release, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: true
+      - name: Move major version tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          major="${RELEASE_TAG#v}"
+          major="${major%%.*}"
+          git tag --force "v${major}" "${RELEASE_SHA}"
+          git push --force origin "refs/tags/v${major}:refs/tags/v${major}"
