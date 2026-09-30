@@ -4,6 +4,8 @@ Run [Schemathesis](https://schemathesis.readthedocs.io/en/latest/) against one O
 
 The runner enables Schemathesis's normal examples, coverage, fuzzing, and stateful phases. **It sends state-changing requests.** Point it at an isolated test environment with disposable data and suitable credentials. A successful build identifies exactly what was verified; it does not prove that the whole system is vulnerability-free.
 
+For live environments where only safe HTTP operations should be tested, set `read_only: true`. The runner then excludes `POST`, `PUT`, `PATCH`, `DELETE`, and `TRACE`, and runs only `GET`, `HEAD`, and `OPTIONS` operations. The default is `false`. This limits the methods Schemathesis sends; it cannot protect against an API that changes state in response to a nominally read-only method such as `GET`.
+
 ## Project configuration
 
 Commit one JSON or YAML file per target. A relative `schema` path is resolved from this file's directory. The schema may instead be an HTTP(S) URL. The five thresholds are independent and optional; omitted thresholds never gate the run. A configured threshold with unavailable coverage fails the run.
@@ -13,6 +15,8 @@ schema: ./openapi.yaml
 base_url: https://test.example.net/api
 component_version: 2.4.0
 configuration_id: staging-eu
+# Optional: test only GET, HEAD, and OPTIONS operations
+read_only: true
 min_operation_coverage: 90
 min_parameters_coverage: 60
 min_keywords_coverage: 40

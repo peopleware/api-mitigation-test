@@ -20,6 +20,7 @@ import yaml
 
 DIMENSIONS = ("operation", "parameters", "keywords", "examples", "responses")
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+READ_ONLY_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 def digest(data: bytes) -> str:
@@ -32,7 +33,7 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "stateful_max_examples"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "stateful_max_examples", "read_only"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
@@ -40,6 +41,8 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     for name in required:
         if not isinstance(value[name], str) or not value[name].strip():
             raise ValueError(f"{name} must be a nonempty string")
+    if "read_only" in value and not isinstance(value["read_only"], bool):
+        raise ValueError("read_only must be a boolean")
     if urlparse(value["base_url"]).scheme not in ("http", "https"):
         raise ValueError("base_url must be an HTTP(S) URL")
     for dim in DIMENSIONS:
@@ -243,6 +246,8 @@ def main() -> int:
         config, config_raw = read_config(config_path)
         schema_location, schema_raw, schema = load_schema(config, config_path)
         expected = schema_operations(schema)
+        if config.get("read_only", False):
+            expected = {(method, path) for method, path in expected if method in READ_ONLY_METHODS}
         report_path, events_path, junit_path = (build_dir / name for name in ("schemathesis.json", "events.ndjson", "junit.xml"))
         coverage_path, html_path = build_dir / "coverage.json", build_dir / "coverage.html"
         env = os.environ.copy()
@@ -252,6 +257,8 @@ def main() -> int:
                "--report-json-path", str(report_path), "--report-ndjson-path", str(events_path),
                "--report-junit-path", str(junit_path), "--coverage-format", "html,json",
                "--coverage-report-html-path", str(html_path), "--coverage-report-json-path", str(coverage_path), "--no-color"]
+        if config.get("read_only", False):
+            cmd.extend(["--exclude-method", "POST", "--exclude-method", "PUT", "--exclude-method", "PATCH", "--exclude-method", "DELETE", "--exclude-method", "TRACE"])
         if config.get("stateful_max_examples") is not None:
             schemathesis_config = build_dir / "schemathesis.toml"
             schemathesis_config.write_text(
@@ -289,7 +296,7 @@ def main() -> int:
                     "schema_location": schema_location, "base_url": config["base_url"], "config_sha256": digest(config_raw),
                     "schema_sha256": digest(schema_raw), "started_at": datetime.now(timezone.utc).isoformat(),
                     "schemathesis_version": importlib.metadata.version("schemathesis"), "tracecov_version": importlib.metadata.version("tracecov"), "config": config}
-        verdict.update({"build": {k: v for k, v in identity.items() if k != "config"}})
+        verdict.update({"build": {k: v for k, v in identity.items() if k != "config"}, "read_only": config.get("read_only", False)})
         (build_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
         write_database(build_dir / "evidence.sqlite", identity, expected, observations, scenarios, coverage, verdict)
         print(f"Evidence: {build_dir}")
