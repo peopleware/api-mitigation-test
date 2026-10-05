@@ -120,6 +120,38 @@ def test_zero_operations(tmp_path, server):
     assert "Zero tested operations" in json.loads((out / "verdict.json").read_text())["issues"]
 
 
+def test_selected_operations_only(tmp_path, server):
+    schema = {**SCHEMA, "paths": {**SCHEMA["paths"], "/other": SCHEMA["paths"]["/items"]}}
+    selected = [{"method": "get", "path": "/other"}, {"method": "POST", "path": "/items"}]
+    proc, out = run(tmp_path, server, local=True, schema=schema,
+                    thresholds={"test_operations": selected})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert verdict["operations"] == {"schema": 2, "tested": 2, "skipped": []}
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        assert db.execute("SELECT method, path FROM operation ORDER BY method, path").fetchall() == [("GET", "/other"), ("POST", "/items")]
+        assert set(db.execute("SELECT DISTINCT method, path FROM observation")) == {("GET", "/other"), ("POST", "/items")}
+
+
+@pytest.mark.parametrize("operations,error", [
+    ([], "nonempty list"),
+    ([{"method": "GET", "path": "/missing"}], "missing from schema"),
+    ([{"method": "GET", "path": "/items"}, {"method": "get", "path": "/items"}], "Duplicate test operation"),
+    ([{"method": "FAKE", "path": "/items"}], "Invalid test operation"),
+])
+def test_invalid_selected_operations_fail_with_evidence(tmp_path, server, operations, error):
+    proc, out = run(tmp_path, server, thresholds={"test_operations": operations})
+    assert proc.returncode == 2
+    assert error in (out / "runner-error.json").read_text()
+    assert (out / "evidence.sqlite").exists()
+
+
+def test_selected_operations_respect_read_only(tmp_path, server):
+    proc, out = run(tmp_path, server, thresholds={"read_only": True, "test_operations": [{"method": "POST", "path": "/items"}]})
+    assert proc.returncode == 2
+    assert "excluded by read_only" in (out / "runner-error.json").read_text()
+
+
 def test_build_inference_and_auth(tmp_path, server):
     proc, out = run(tmp_path, server, build_env={"GITHUB_ACTIONS": "true", "GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "2"})
     assert proc.returncode == 0, proc.stdout

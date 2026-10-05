@@ -33,7 +33,7 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "stateful_max_examples", "read_only"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
@@ -63,6 +63,21 @@ def read_config(path: Path) -> tuple[dict, bytes]:
         if item["method"].upper() not in {m.upper() for m in HTTP_METHODS} or not item["path"].startswith("/"):
             raise ValueError("Invalid exception method or path")
         date.fromisoformat(item["expiry"])
+    if "test_operations" in value:
+        operations = value["test_operations"]
+        if not isinstance(operations, list) or not operations:
+            raise ValueError("test_operations must be a nonempty list")
+        selected = set()
+        for item in operations:
+            if not isinstance(item, dict) or set(item) != {"method", "path"}:
+                raise ValueError("Each test operation needs method and path")
+            method, path = item["method"], item["path"]
+            if not isinstance(method, str) or method.upper() not in {m.upper() for m in HTTP_METHODS} or not isinstance(path, str) or not path.startswith("/"):
+                raise ValueError("Invalid test operation method or path")
+            operation = (method.upper(), path)
+            if operation in selected:
+                raise ValueError(f"Duplicate test operation: {method.upper()} {path}")
+            selected.add(operation)
     return value, raw
 
 
@@ -246,6 +261,13 @@ def main() -> int:
         config, config_raw = read_config(config_path)
         schema_location, schema_raw, schema = load_schema(config, config_path)
         expected = schema_operations(schema)
+        if "test_operations" in config:
+            selected = {(item["method"].upper(), item["path"]) for item in config["test_operations"]}
+            if unknown := selected - expected:
+                raise ValueError(f"test_operations reference operations missing from schema: {sorted(f'{m} {p}' for m, p in unknown)}")
+            if config.get("read_only", False) and any(method not in READ_ONLY_METHODS for method, _ in selected):
+                raise ValueError("test_operations contains methods excluded by read_only")
+            expected = selected
         if config.get("read_only", False):
             expected = {(method, path) for method, path in expected if method in READ_ONLY_METHODS}
         report_path, events_path, junit_path = (build_dir / name for name in ("schemathesis.json", "events.ndjson", "junit.xml"))
@@ -259,13 +281,17 @@ def main() -> int:
                "--coverage-report-html-path", str(html_path), "--coverage-report-json-path", str(coverage_path), "--no-color"]
         if config.get("read_only", False):
             cmd.extend(["--exclude-method", "POST", "--exclude-method", "PUT", "--exclude-method", "PATCH", "--exclude-method", "DELETE", "--exclude-method", "TRACE"])
-        if config.get("stateful_max_examples") is not None:
+        if "test_operations" in config:
+            for method, path in sorted(expected):
+                cmd.extend(["--include-name", f"{method} {path}"])
+        if "test_operations" in config or config.get("stateful_max_examples") is not None:
             schemathesis_config = build_dir / "schemathesis.toml"
-            schemathesis_config.write_text(
-                "[phases.stateful.generation]\n"
-                f"max-examples = {config['stateful_max_examples']}\n",
-                encoding="utf-8",
-            )
+            lines = []
+            if "test_operations" in config:
+                lines.extend(["[phases.coverage]", "unexpected-methods = []"])
+            if config.get("stateful_max_examples") is not None:
+                lines.extend(["[phases.stateful.generation]", f"max-examples = {config['stateful_max_examples']}"])
+            schemathesis_config.write_text("\n".join(lines) + "\n", encoding="utf-8")
             cmd = [executable, "--config-file", str(schemathesis_config), *cmd[1:]]
         with (build_dir / "console.log").open("w", encoding="utf-8") as log:
             process = subprocess.run(cmd, env=env, cwd=Path(__file__).parent, stdout=log, stderr=subprocess.STDOUT, check=False)
