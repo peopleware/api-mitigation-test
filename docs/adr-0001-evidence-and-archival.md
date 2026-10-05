@@ -8,7 +8,9 @@ An API mitigation result must be auditable after a CI job ends. A green CI statu
 
 ## Decision
 
-Produce one SQLite database per build, alongside the detailed Schemathesis and TraceCov reports. Record build, component, configuration, and schema identity, SHA-256 hashes of the config and schema bytes, tool versions, all schema operations and tested flags, skipped scenarios, each observed case/check result, matched exception metadata, coverage values, and the final verdict. Never synthesize passing checks from missing events. Validate agreement between reported and observed operation counts and preserve original failures even when an exception matches.
+Produce one SQLite database per build, alongside the detailed Schemathesis and TraceCov reports. Record build, component, configuration, and schema identity, SHA-256 hashes of the config and schema bytes, tool versions, selected schema operations and tested flags, skipped scenarios, each observed case/check result, matched exception metadata, coverage values, and the final verdict. Never synthesize passing checks from missing events. Validate agreement between reported and observed operation counts and preserve original failures even when an exception matches.
+
+Each table has a local integer primary key. The build's textual run label is `build_number`; operations, scenarios, observations, and coverage reference the build, while checks reference observations. Scenarios and observations reference operations when their method and path can be identified. Unexpected operations are retained and marked outside the selected scope. Foreign keys restrict deletion of linked evidence. Archived files retain their original schema; this structure applies to newly generated files.
 
 The consuming project owns the config and archives every `evidence.sqlite` to durable storage with its required access controls and retention period. CI artifact capture is a transport and short-term debugging aid. Artifact upload must run on failure, too. Publishing or archiving evidence externally is outside the test image because each consuming project has different storage governance.
 

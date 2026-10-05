@@ -212,30 +212,54 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
 
 def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], observations: list[dict], scenarios: list[dict], coverage: dict, verdict: dict) -> None:
     with sqlite3.connect(path) as db:
+        db.execute("PRAGMA foreign_keys = ON")
         db.executescript("""
-            CREATE TABLE build (build_id TEXT PRIMARY KEY, component_version TEXT, configuration_id TEXT, schema_location TEXT, base_url TEXT, config_sha256 TEXT, schema_sha256 TEXT, started_at TEXT, schemathesis_version TEXT, tracecov_version TEXT, passed INTEGER, verdict_json TEXT);
-            CREATE TABLE operation (method TEXT, path TEXT, tested INTEGER, coverage_json TEXT, PRIMARY KEY(method,path));
-            CREATE TABLE scenario (operation TEXT, phase TEXT, status TEXT, skip_reason TEXT);
-            CREATE TABLE observation (case_id TEXT, method TEXT, path TEXT, phase TEXT, response_status INTEGER, PRIMARY KEY(case_id,phase));
-            CREATE TABLE check_result (case_id TEXT, phase TEXT, name TEXT, status TEXT, failure_type TEXT, failure_message TEXT, exception_json TEXT);
-            CREATE TABLE coverage (dimension TEXT PRIMARY KEY, percent REAL, covered INTEGER, total INTEGER, detail_json TEXT);
+            CREATE TABLE build (id INTEGER PRIMARY KEY, build_number TEXT NOT NULL UNIQUE, component_version TEXT, configuration_id TEXT, schema_location TEXT, base_url TEXT, config_sha256 TEXT, schema_sha256 TEXT, started_at TEXT, schemathesis_version TEXT, tracecov_version TEXT, passed INTEGER, verdict_json TEXT);
+            CREATE TABLE operation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, method TEXT NOT NULL, path TEXT NOT NULL, expected INTEGER NOT NULL, tested INTEGER NOT NULL, coverage_json TEXT, UNIQUE(build_id, method, path), UNIQUE(build_id, id));
+            CREATE TABLE scenario (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, operation_id INTEGER, operation TEXT, phase TEXT, status TEXT, skip_reason TEXT, FOREIGN KEY(build_id, operation_id) REFERENCES operation(build_id, id) ON DELETE RESTRICT);
+            CREATE TABLE observation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, operation_id INTEGER, case_id TEXT, method TEXT, path TEXT, phase TEXT, response_status INTEGER, FOREIGN KEY(build_id, operation_id) REFERENCES operation(build_id, id) ON DELETE RESTRICT);
+            CREATE TABLE check_result (id INTEGER PRIMARY KEY, observation_id INTEGER NOT NULL REFERENCES observation(id) ON DELETE RESTRICT, name TEXT, status TEXT, failure_type TEXT, failure_message TEXT, exception_json TEXT);
+            CREATE TABLE coverage (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, dimension TEXT NOT NULL, percent REAL, covered INTEGER, total INTEGER, detail_json TEXT, UNIQUE(build_id, dimension));
+            CREATE INDEX scenario_operation ON scenario(build_id, operation_id);
+            CREATE INDEX observation_operation ON observation(build_id, operation_id);
+            CREATE INDEX check_result_observation ON check_result(observation_id);
         """)
-        db.execute("INSERT INTO build VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", tuple(identity[k] for k in ("build_id", "component_version", "configuration_id", "schema_location", "base_url", "config_sha256", "schema_sha256", "started_at", "schemathesis_version", "tracecov_version")) + (int(verdict["passed"]), json.dumps(verdict)))
-        ops = {(o["method"], o["path"]) for o in observations}
+        build_id = db.execute(
+            "INSERT INTO build (build_number, component_version, configuration_id, schema_location, base_url, config_sha256, schema_sha256, started_at, schemathesis_version, tracecov_version, passed, verdict_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            tuple(identity[k] for k in ("build_id", "component_version", "configuration_id", "schema_location", "base_url", "config_sha256", "schema_sha256", "started_at", "schemathesis_version", "tracecov_version")) + (int(verdict["passed"]), json.dumps(verdict)),
+        ).lastrowid
+        observed_ops = {(o["method"], o["path"]) for o in observations if o["method"] and o["path"]}
+        scenario_ops = set()
+        for scenario in scenarios:
+            parts = (scenario["operation"] or "").split(" ", 1)
+            if len(parts) == 2 and parts[0] in {m.upper() for m in HTTP_METHODS} and parts[1].startswith("/"):
+                scenario_ops.add((parts[0], parts[1]))
         covops = {(o["method"], o["path"]): o for o in coverage.get("operations", [])}
-        for method, opath in sorted(expected):
-            db.execute("INSERT INTO operation VALUES (?,?,?,?)", (method, opath, int((method, opath) in ops), json.dumps(covops.get((method, opath)))))
+        operation_ids = {}
+        for method, opath in sorted(expected | observed_ops | scenario_ops):
+            operation_ids[(method, opath)] = db.execute(
+                "INSERT INTO operation (build_id, method, path, expected, tested, coverage_json) VALUES (?,?,?,?,?,?)",
+                (build_id, method, opath, int((method, opath) in expected), int((method, opath) in observed_ops), json.dumps(covops.get((method, opath)))),
+            ).lastrowid
         for s in scenarios:
-            db.execute("INSERT INTO scenario VALUES (?,?,?,?)", (s["operation"], s["phase"], s["status"], s["skip_reason"]))
+            parts = (s["operation"] or "").split(" ", 1)
+            op_key = tuple(parts) if len(parts) == 2 else None
+            db.execute("INSERT INTO scenario (build_id, operation_id, operation, phase, status, skip_reason) VALUES (?,?,?,?,?,?)",
+                       (build_id, operation_ids.get(op_key), s["operation"], s["phase"], s["status"], s["skip_reason"]))
         for o in observations:
-            db.execute("INSERT OR REPLACE INTO observation VALUES (?,?,?,?,?)", (o["case_id"], o["method"], o["path"], o["phase"], o["response_status"]))
+            observation_id = db.execute(
+                "INSERT INTO observation (build_id, operation_id, case_id, method, path, phase, response_status) VALUES (?,?,?,?,?,?,?)",
+                (build_id, operation_ids.get((o["method"], o["path"])), o["case_id"], o["method"], o["path"], o["phase"], o["response_status"]),
+            ).lastrowid
             for check in o["checks"] or []:
                 failure = ((check.get("failure_info") or {}).get("failure") or {})
                 matched = exception_for(identity["config"], o["method"], o["path"], failure.get("type", "")) if failure else None
-                db.execute("INSERT INTO check_result VALUES (?,?,?,?,?,?,?)", (o["case_id"], o["phase"], check.get("name"), check.get("status"), failure.get("type"), failure.get("message"), json.dumps(matched) if matched else None))
+                db.execute("INSERT INTO check_result (observation_id, name, status, failure_type, failure_message, exception_json) VALUES (?,?,?,?,?,?)",
+                           (observation_id, check.get("name"), check.get("status"), failure.get("type"), failure.get("message"), json.dumps(matched) if matched else None))
         for dim in DIMENSIONS:
             detail = (coverage.get("summary") or {}).get("operations" if dim == "operation" else dim) or {}
-            db.execute("INSERT INTO coverage VALUES (?,?,?,?,?)", (dim, detail.get("percent"), detail.get("covered"), detail.get("total"), json.dumps(detail)))
+            db.execute("INSERT INTO coverage (build_id, dimension, percent, covered, total, detail_json) VALUES (?,?,?,?,?,?)",
+                       (build_id, dim, detail.get("percent"), detail.get("covered"), detail.get("total"), json.dumps(detail)))
 
 
 def main() -> int:

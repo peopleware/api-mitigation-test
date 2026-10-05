@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from fixture_api import SCHEMA
+from runner import write_database
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "runner.py"
@@ -82,13 +83,28 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
     verdict = json.loads((out / "verdict.json").read_text())
     coverage = json.loads((out / "coverage.json").read_text())
     with sqlite3.connect(out / "evidence.sqlite") as db:
-        build = db.execute("SELECT build_id, component_version, configuration_id, config_sha256, schema_sha256, passed FROM build").fetchone()
-        assert build[:3] == ("local-123", "1.2.3", "integration")
-        assert len(build[3]) == len(build[4]) == 64 and build[5] == 1
-        assert db.execute("SELECT COUNT(*) FROM operation WHERE tested = 1").fetchone()[0] == verdict["operations"]["tested"]
+        db.execute("PRAGMA foreign_keys = ON")
+        build = db.execute("SELECT id, build_number, component_version, configuration_id, config_sha256, schema_sha256, passed FROM build").fetchone()
+        assert build[0] > 0 and build[1:4] == ("local-123", "1.2.3", "integration")
+        assert len(build[4]) == len(build[5]) == 64 and build[6] == 1
+        assert not db.execute("PRAGMA foreign_key_check").fetchall()
+        for table in ("build", "operation", "scenario", "observation", "check_result", "coverage"):
+            assert ("id", "INTEGER", 1) in {(row[1], row[2], row[5]) for row in db.execute(f"PRAGMA table_info({table})")}
+        for table, columns in {"operation": {"build_id"}, "scenario": {"build_id", "operation_id"},
+                               "observation": {"build_id", "operation_id"}, "check_result": {"observation_id"},
+                               "coverage": {"build_id"}}.items():
+            assert columns <= {row[3] for row in db.execute(f"PRAGMA foreign_key_list({table})")}
+        assert db.execute("SELECT COUNT(*) FROM operation WHERE expected = 1 AND tested = 1").fetchone()[0] == verdict["operations"]["tested"]
         assert db.execute("SELECT COUNT(*) FROM observation").fetchone()[0] == verdict["observed_cases"]
         assert db.execute("SELECT COUNT(*) FROM check_result WHERE status = 'failure' AND exception_json IS NOT NULL").fetchone()[0] >= 1
         assert db.execute("SELECT percent FROM coverage WHERE dimension = 'operation'").fetchone()[0] == coverage["summary"]["operations"]["percent"]
+        assert db.execute("SELECT COUNT(*) FROM observation o JOIN operation p ON o.operation_id = p.id WHERE o.build_id = p.build_id").fetchone()[0] == verdict["observed_cases"]
+        assert db.execute("SELECT COUNT(*) FROM check_result c JOIN observation o ON c.observation_id = o.id").fetchone()[0] == db.execute("SELECT COUNT(*) FROM check_result").fetchone()[0]
+        assert db.execute("SELECT COUNT(*) FROM scenario WHERE operation_id IS NULL").fetchone()[0] == 0
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO coverage (build_id, dimension) VALUES (?, ?)", (build[0] + 1, "invalid"))
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("DELETE FROM build WHERE id = ?", (build[0],))
     assert verdict["observed_failures"][0]["failure_type"] == "AcceptedNegativeData"
     assert (out / "junit.xml").stat().st_size and (out / "coverage.html").stat().st_size
     assert all(b"test-secret" not in path.read_bytes() for path in out.iterdir() if path.is_file())
@@ -99,6 +115,9 @@ def test_unexplained_and_expired_exception_fail(tmp_path, server):
     assert proc.returncode == 1
     assert "Unexplained" in json.loads((out / "verdict.json").read_text())["issues"][0]
     assert (out / "evidence.sqlite").exists()
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        assert not db.execute("PRAGMA foreign_key_check").fetchall()
+        assert db.execute("SELECT COUNT(*) FROM check_result WHERE status = 'failure' AND exception_json IS NULL").fetchone()[0] >= 1
     expired = {**EXCEPTION, "expiry": "2020-01-01"}
     proc2, out2 = run(tmp_path / "expired", server, exceptions=[expired])
     assert proc2.returncode == 1
@@ -118,6 +137,8 @@ def test_zero_operations(tmp_path, server):
     assert out is not None
     assert (out / "evidence.sqlite").exists()
     assert "Zero tested operations" in json.loads((out / "verdict.json").read_text())["issues"]
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        assert not db.execute("PRAGMA foreign_key_check").fetchall()
 
 
 def test_selected_operations_only(tmp_path, server):
@@ -129,8 +150,45 @@ def test_selected_operations_only(tmp_path, server):
     verdict = json.loads((out / "verdict.json").read_text())
     assert verdict["operations"] == {"schema": 2, "tested": 2, "skipped": []}
     with sqlite3.connect(out / "evidence.sqlite") as db:
-        assert db.execute("SELECT method, path FROM operation ORDER BY method, path").fetchall() == [("GET", "/other"), ("POST", "/items")]
-        assert set(db.execute("SELECT DISTINCT method, path FROM observation")) == {("GET", "/other"), ("POST", "/items")}
+        assert db.execute("SELECT method, path FROM operation WHERE expected = 1 ORDER BY method, path").fetchall() == [("GET", "/other"), ("POST", "/items")]
+        assert set(db.execute("SELECT DISTINCT p.method, p.path FROM observation o JOIN operation p ON p.id = o.operation_id")) == {("GET", "/other"), ("POST", "/items")}
+
+
+def test_relational_event_edge_cases(tmp_path):
+    path = tmp_path / "evidence.sqlite"
+    identity = {"build_id": "local-edge", "component_version": "1.0", "configuration_id": "test",
+                "schema_location": "schema.yaml", "base_url": "http://example.test", "config_sha256": "a" * 64,
+                "schema_sha256": "b" * 64, "started_at": "2026-01-01T00:00:00+00:00",
+                "schemathesis_version": "1", "tracecov_version": "1", "config": {}}
+    checks = [{"name": "status", "status": "success"}]
+    observations = [{"case_id": "reused", "method": "GET", "path": "/items", "phase": "fuzzing",
+                     "response_status": 200, "checks": checks},
+                    {"case_id": "reused", "method": "GET", "path": "/items", "phase": "fuzzing",
+                     "response_status": 201, "checks": checks},
+                    {"case_id": "stray", "method": "PATCH", "path": "/stray", "phase": "fuzzing",
+                     "response_status": 200, "checks": checks}]
+    scenarios = [{"operation": "GET /items", "phase": "fuzzing", "status": "success", "skip_reason": None},
+                 {"operation": "PATCH /stray", "phase": "fuzzing", "status": "success", "skip_reason": None},
+                 {"operation": "unparseable", "phase": "examples", "status": "skip", "skip_reason": "no examples"}]
+    write_database(path, identity, {("GET", "/items")}, observations, scenarios, {}, {"passed": False})
+    with sqlite3.connect(path) as db:
+        db.execute("PRAGMA foreign_keys = ON")
+        assert not db.execute("PRAGMA foreign_key_check").fetchall()
+        assert db.execute("SELECT COUNT(*) FROM observation WHERE case_id = 'reused'").fetchone()[0] == 2
+        assert db.execute("SELECT COUNT(*) FROM check_result").fetchone()[0] == 3
+        assert db.execute("SELECT expected, tested FROM operation WHERE method = 'PATCH'").fetchone() == (0, 1)
+        assert db.execute("SELECT operation_id, skip_reason FROM scenario WHERE operation = 'unparseable'").fetchone() == (None, "no examples")
+        assert db.execute("SELECT COUNT(*) FROM scenario WHERE operation_id IS NOT NULL").fetchone()[0] == 2
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO check_result (observation_id) VALUES (999)")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("DELETE FROM observation WHERE case_id = 'stray'")
+        other_build = db.execute("INSERT INTO build (build_number) VALUES ('other')").lastrowid
+        first_operation = db.execute("SELECT id FROM operation WHERE method = 'GET'").fetchone()[0]
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO scenario (build_id, operation_id) VALUES (?, ?)", (other_build, first_operation))
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO observation (build_id, operation_id) VALUES (?, ?)", (other_build, first_operation))
 
 
 @pytest.mark.parametrize("operations,error", [
