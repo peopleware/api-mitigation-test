@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import sysconfig
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -110,6 +111,19 @@ def build_id() -> str:
     if not value:
         raise ValueError("Direct Docker use requires API_MITIGATION_BUILD_ID")
     return value
+
+
+def schemathesis_executable() -> str:
+    name = "schemathesis.exe" if os.name == "nt" else "schemathesis"
+    user_scheme = "nt_user" if os.name == "nt" else "posix_user"
+    candidates = (Path(sysconfig.get_path("scripts")) / name,
+                  Path(sysconfig.get_path("scripts", scheme=user_scheme)) / name)
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    if executable := shutil.which("schemathesis"):
+        return executable
+    raise FileNotFoundError(f"Schemathesis CLI not found for {sys.executable}; install requirements.txt in this Python environment")
 
 
 def parse_events(path: Path) -> tuple[list[dict], list[dict]]:
@@ -298,7 +312,7 @@ def main() -> int:
         coverage_path, html_path = build_dir / "coverage.json", build_dir / "coverage.html"
         env = os.environ.copy()
         env.update({"SCHEMATHESIS_HOOKS": "hooks", "PYTHONUTF8": "1", "PYTHONPATH": str(Path(__file__).parent)})
-        executable = shutil.which("schemathesis") or str(Path(sys.executable).with_name("schemathesis.exe" if os.name == "nt" else "schemathesis"))
+        executable = schemathesis_executable()
         cmd = [executable, "run", schema_location, "--url", config["base_url"],
                "--report-json-path", str(report_path), "--report-ndjson-path", str(events_path),
                "--report-junit-path", str(junit_path), "--coverage-format", "html,json",

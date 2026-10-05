@@ -12,12 +12,25 @@ import pytest
 import yaml
 
 from fixture_api import SCHEMA
-from runner import write_database
+from runner import schemathesis_executable, write_database
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "runner.py"
 EXCEPTION = {"method": "POST", "path": "/items", "failure_type": "AcceptedNegativeData",
              "reason": "Fixture accepts missing body", "owner": "test team", "expiry": "2099-01-01"}
+
+
+def test_schemathesis_cli_in_user_scripts(tmp_path, monkeypatch):
+    import runner
+
+    scripts = tmp_path / "scripts"
+    user_scripts = tmp_path / "user-scripts"
+    user_scripts.mkdir()
+    executable = user_scripts / ("schemathesis.exe" if os.name == "nt" else "schemathesis")
+    executable.touch()
+    monkeypatch.setattr(runner.sysconfig, "get_path", lambda name, scheme=None: str(user_scripts if scheme else scripts))
+    monkeypatch.setattr(runner.shutil, "which", lambda name: None)
+    assert schemathesis_executable() == str(executable)
 
 
 @pytest.fixture
