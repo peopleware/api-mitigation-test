@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Mitigation test report</title>
+  <style>__CSS__</style>
+</head>
+<body>
+  <header class="hero">
+    <div class="header-inner">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 40 44" aria-hidden="true" focusable="false">
+          <path class="brand-shield" d="M20 3 33 8v11c0 10-5 17-13 21C12 36 7 29 7 19V8Z"/>
+          <path class="brand-connection" d="M3 17h8m18 0h8"/>
+          <circle class="brand-endpoint" cx="3" cy="17" r="2"/>
+          <circle class="brand-endpoint" cx="37" cy="17" r="2"/>
+          <path class="brand-check" d="m14 22 4 4 9-11"/>
+        </svg>
+        <div><h1>Mitigation test report</h1><p>Operations, checks and HTTP exchanges</p></div>
+      </div>
+      <div>
+        <nav class="run-navigation" aria-label="Run navigation">
+          <button id="older-run" class="nav-arrow" type="button" aria-label="Older run" title="Older run">‹</button>
+          <details id="run-picker" class="run-picker">
+            <summary id="run-picker-summary" class="run-selector" aria-label="Choose a run">
+              <span><strong id="selected-run"></strong><time id="selected-time"></time></span>
+              <span id="selected-status" class="pill"></span>
+            </summary>
+            <div class="run-menu">
+              <label class="sr-only" for="run-search">Search runs</label>
+              <input id="run-search" type="search" placeholder="Search build, date, configuration or status">
+              <div id="run-options" class="run-options"></div>
+            </div>
+          </details>
+          <button id="newer-run" class="nav-arrow" type="button" aria-label="Newer run" title="Newer run">›</button>
+        </nav>
+        <p id="run-count" class="run-count" aria-live="polite"></p>
+      </div>
+    </div>
+  </header>
+  <main>
+    <nav class="tabs" aria-label="Report views">
+      <button id="tab-report" type="button">Test report</button>
+      <button id="tab-trends" type="button">Trends</button>
+    </nav>
+    <section id="report" aria-label="Selected run report">
+      <div id="run-metadata" class="metadata"></div>
+      <div id="run-stats" class="stats"></div>
+      <div id="run-notices"></div>
+      <div class="toolbar">
+        <label class="sr-only" for="operation-search">Search operations</label>
+        <input id="operation-search" class="search" type="search" placeholder="Search entities, operations or paths…">
+        <div id="operation-filters" class="filter-buttons" aria-label="Filter operations by result"></div>
+        <div class="toolbar-actions">
+          <button id="expand-operations" type="button">Expand operations</button>
+          <button id="collapse-all" type="button">Collapse all</button>
+        </div>
+      </div>
+      <p id="operation-result-count" class="result-count" aria-live="polite"></p>
+      <div id="operations"></div>
+      <details class="notes"><summary>Run provenance</summary><div id="run-provenance" class="metadata"></div></details>
+    </section>
+    <section id="trends" aria-label="Run trends" hidden>
+      <div class="panel">
+        <h2>Run trends</h2>
+        <p class="muted">Compare runs for the same configuration and target. Schema changes are marked in the history.</p>
+        <label class="sr-only" for="trend-group">Configuration and target</label>
+        <select id="trend-group"></select>
+      </div>
+      <div id="trend-content"></div>
+    </section>
+    <details class="notes">
+      <summary>About this report · __RUN_COUNT__ runs · Generated __GENERATED__</summary>
+      <p>HTTP details are sanitized on a best-effort basis. Treat this report as sensitive test evidence. Coverage detail remains in the companion TraceCov HTML when available.</p>
+      <div id="warnings"></div>
+    </details>
+  </main>
+  <script id="report-data" type="application/json">__DATA__</script>
+  <script>__JS__</script>
+</body>
+</html>

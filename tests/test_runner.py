@@ -120,7 +120,13 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
             db.execute("DELETE FROM build WHERE id = ?", (build[0],))
     assert verdict["observed_failures"][0]["failure_type"] == "AcceptedNegativeData"
     assert (out / "junit.xml").stat().st_size and (out / "coverage.html").stat().st_size
+    assert (out.parent / "report.html").stat().st_size
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        request_json, response_json = db.execute("SELECT request_json, response_json FROM observation WHERE response_status IS NOT NULL LIMIT 1").fetchone()
+        assert json.loads(request_json)["uri"].startswith(server)
+        assert json.loads(response_json)["status"] is not None
     assert all(b"test-secret" not in path.read_bytes() for path in out.iterdir() if path.is_file())
+    assert b"test-secret" not in (out.parent / "report.html").read_bytes()
 
 
 def test_unexplained_and_expired_exception_fail(tmp_path, server):
@@ -128,6 +134,7 @@ def test_unexplained_and_expired_exception_fail(tmp_path, server):
     assert proc.returncode == 1
     assert "Unexplained" in json.loads((out / "verdict.json").read_text())["issues"][0]
     assert (out / "evidence.sqlite").exists()
+    assert (out.parent / "report.html").exists()
     with sqlite3.connect(out / "evidence.sqlite") as db:
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
         assert db.execute("SELECT COUNT(*) FROM check_result WHERE status = 'failure' AND exception_json IS NULL").fetchone()[0] >= 1
@@ -142,6 +149,7 @@ def test_thresholds_independent_and_omitted(tmp_path, server):
     assert proc.returncode == 1
     assert any("parameters coverage" in issue for issue in json.loads((out / "verdict.json").read_text())["issues"])
     assert (out / "evidence.sqlite").exists()
+    assert (out.parent / "report.html").exists()
 
 
 def test_zero_operations(tmp_path, server):
@@ -149,9 +157,34 @@ def test_zero_operations(tmp_path, server):
     assert proc.returncode != 0
     assert out is not None
     assert (out / "evidence.sqlite").exists()
+    assert (out.parent / "report.html").exists()
     assert "Zero tested operations" in json.loads((out / "verdict.json").read_text())["issues"]
     with sqlite3.connect(out / "evidence.sqlite") as db:
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_report_generation_warning_preserves_success_exit(tmp_path, server, monkeypatch, capsys):
+    import report
+    import runner
+
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"schema": f"{server}/openapi.json", "base_url": server,
+                                  "component_version": "1.0", "configuration_id": "integration",
+                                  "read_only": True, "test_operations": [{"method": "GET", "path": "/items"}]}), encoding="utf-8")
+    monkeypatch.setenv("API_MITIGATION_BUILD_ID", "report-warning")
+    monkeypatch.setenv("API_MITIGATION_OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("API_MITIGATION_BEARER_TOKEN", "test-secret")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("BITBUCKET_BUILD_NUMBER", raising=False)
+    monkeypatch.setattr(sys, "argv", ["runner.py", "--config", str(config)])
+
+    def fail(*args):
+        raise OSError("report disk full")
+
+    monkeypatch.setattr(report, "generate_report", fail)
+    assert runner.main() == 0
+    assert "Warning: HTML report generation failed: report disk full" in capsys.readouterr().err
+    assert next((tmp_path / "out").glob("*/evidence.sqlite")).exists()
 
 
 def test_selected_operations_only(tmp_path, server):

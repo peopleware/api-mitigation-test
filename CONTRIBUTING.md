@@ -27,8 +27,8 @@ On Windows PowerShell, activate with `.\.venv\Scripts\Activate.ps1`; on POSIX sh
 ## Make a change
 
 1. Keep target selection in the project-owned JSON or YAML config. Do not add a second target or put bearer tokens in that file. The Action accepts only `config`, the pipe accepts `CONFIG`, and direct Docker use accepts `--config`.
-2. Change `runner.py` for shared behavior and `hooks.py` for Schemathesis or TraceCov hooks. Change `bitbucket-pipe/run.sh`, `action.yml`, or `pipe.yml` only when their entry point or metadata changes.
-3. Add or update focused tests in `tests/test_runner.py` using the disposable API. Cover both JSON and YAML if the config contract changes. Preserve tests for local and remote schema loading, authentication, exceptions, thresholds, zero-operation runs, report/database consistency, and both wrappers.
+2. Change `runner.py` for shared behavior, `report.py` and `report_assets/` for the offline viewer, and `hooks.py` for Schemathesis or TraceCov hooks. Change `bitbucket-pipe/run.sh`, `action.yml`, or `pipe.yml` only when their entry point or metadata changes.
+3. Add or update focused tests using the disposable API and synthetic evidence databases. Run `python -m pytest -q tests`; report interaction tests use Node.js when it is available. Cover both JSON and YAML if the config contract changes. Preserve tests for local and remote schema loading, authentication, exceptions, thresholds, zero-operation runs, report/database consistency, and both wrappers.
 4. Update `README.md` for user-visible behavior. Record a new ADR in `docs/` when changing the evidence model, verdict meaning, or archival responsibility.
 5. Run the test command above and review the diff. In the pull request, explain what changed, how it was tested, and any compatibility or evidence-format impact.
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import date, datetime, timezone
 import hashlib
 import importlib.metadata
@@ -14,7 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import sysconfig
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from urllib.request import urlopen
 
 import yaml
@@ -22,6 +23,82 @@ import yaml
 DIMENSIONS = ("operation", "parameters", "keywords", "examples", "responses")
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
 READ_ONLY_METHODS = {"GET", "HEAD", "OPTIONS"}
+MAX_REPORT_BODY_BYTES = 65_536
+SENSITIVE_MARKERS = ("auth", "password", "passwd", "secret", "token", "api_key", "apikey", "cookie", "session", "credential", "private_key", "access_key", "csrf")
+
+
+def sensitive_key(key: str) -> bool:
+    return any(marker in key.lower().replace("-", "_") for marker in SENSITIVE_MARKERS)
+
+
+def sanitize_value(value):
+    if isinstance(value, dict):
+        return {key: "[REDACTED]" if sensitive_key(str(key)) else sanitize_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_value(item) for item in value]
+    return value
+
+
+def sanitize_headers(headers) -> dict:
+    if not isinstance(headers, dict):
+        return {}
+    return {str(key): "[REDACTED]" if sensitive_key(str(key)) else value for key, value in headers.items()}
+
+
+def sanitize_uri(uri: str) -> str:
+    if not uri:
+        return ""
+    try:
+        parts = urlsplit(uri)
+        host = parts.netloc.split("@", 1)[-1]
+        netloc = f"[REDACTED]@{host}" if "@" in parts.netloc else host
+        query = urlencode([(key, "[REDACTED]" if sensitive_key(key) else value)
+                           for key, value in parse_qsl(parts.query, keep_blank_values=True)])
+        return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
+    except ValueError:
+        return "[omitted: invalid URL]"
+
+
+def report_body(encoded, headers: dict) -> dict:
+    if encoded is None:
+        return {"status": "absent"}
+    content_type = next((str(value[0] if isinstance(value, list) and value else value)
+                         for key, value in headers.items() if key.lower() == "content-type"), "")
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type != "application/json" and not media_type.endswith("+json"):
+        return {"status": "omitted: non-JSON body"}
+    try:
+        if isinstance(encoded, dict) and "$base64" in encoded:
+            raw = base64.b64decode(encoded["$base64"], validate=True)
+        elif isinstance(encoded, str):
+            raw = encoded.encode("utf-8")
+        else:
+            return {"status": "omitted: unsupported body"}
+        if len(raw) > 1_048_576:
+            return {"status": "omitted: body exceeds 1 MiB processing limit"}
+        sanitized = sanitize_value(json.loads(raw.decode("utf-8")))
+        rendered = json.dumps(sanitized, indent=2, ensure_ascii=False)
+        data = rendered.encode("utf-8")
+        if len(data) > MAX_REPORT_BODY_BYTES:
+            prefix = data[:MAX_REPORT_BODY_BYTES].decode("utf-8", errors="ignore")
+            return {"status": "truncated", "text": prefix, "size": len(data)}
+        return {"status": "available", "text": rendered}
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return {"status": "omitted: invalid or truncated JSON body"}
+
+
+def sanitize_exchange(interaction: dict, direction: str) -> dict | None:
+    item = interaction.get(direction)
+    if not isinstance(item, dict):
+        return None
+    headers = item.get("headers") or {}
+    detail = {"headers": sanitize_headers(headers),
+              "body": report_body(item.get("body" if direction == "request" else "content"), headers)}
+    if direction == "request":
+        detail.update({"method": item.get("method"), "uri": sanitize_uri(item.get("uri") or "")})
+    else:
+        detail.update({"status": item.get("status_code"), "elapsed": item.get("elapsed")})
+    return detail
 
 
 def digest(data: bytes) -> str:
@@ -146,6 +223,8 @@ def parse_events(path: Path) -> tuple[list[dict], list[dict]]:
             observations.append({
                 "case_id": case_id, "method": value.get("method"), "path": value.get("path"),
                 "phase": scenario.get("phase"), "response_status": result.get("status_code"),
+                "request": sanitize_exchange(interaction, "request"),
+                "response": sanitize_exchange(interaction, "response"),
                 "checks": checks.get(case_id),
             })
     return observations, scenarios
@@ -224,14 +303,14 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
     return verdict, failures
 
 
-def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], observations: list[dict], scenarios: list[dict], coverage: dict, verdict: dict) -> None:
+def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], observations: list[dict], scenarios: list[dict], coverage: dict, verdict: dict, schema: dict | None = None) -> None:
     with sqlite3.connect(path) as db:
         db.execute("PRAGMA foreign_keys = ON")
         db.executescript("""
             CREATE TABLE build (id INTEGER PRIMARY KEY, build_number TEXT NOT NULL UNIQUE, component_version TEXT, configuration_id TEXT, schema_location TEXT, base_url TEXT, config_sha256 TEXT, schema_sha256 TEXT, started_at TEXT, schemathesis_version TEXT, tracecov_version TEXT, passed INTEGER, verdict_json TEXT);
-            CREATE TABLE operation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, method TEXT NOT NULL, path TEXT NOT NULL, expected INTEGER NOT NULL, tested INTEGER NOT NULL, coverage_json TEXT, UNIQUE(build_id, method, path), UNIQUE(build_id, id));
+            CREATE TABLE operation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, method TEXT NOT NULL, path TEXT NOT NULL, expected INTEGER NOT NULL, tested INTEGER NOT NULL, coverage_json TEXT, tags_json TEXT, summary TEXT, UNIQUE(build_id, method, path), UNIQUE(build_id, id));
             CREATE TABLE scenario (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, operation_id INTEGER, operation TEXT, phase TEXT, status TEXT, skip_reason TEXT, FOREIGN KEY(build_id, operation_id) REFERENCES operation(build_id, id) ON DELETE RESTRICT);
-            CREATE TABLE observation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, operation_id INTEGER, case_id TEXT, method TEXT, path TEXT, phase TEXT, response_status INTEGER, FOREIGN KEY(build_id, operation_id) REFERENCES operation(build_id, id) ON DELETE RESTRICT);
+            CREATE TABLE observation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, operation_id INTEGER, case_id TEXT, method TEXT, path TEXT, phase TEXT, response_status INTEGER, request_json TEXT, response_json TEXT, FOREIGN KEY(build_id, operation_id) REFERENCES operation(build_id, id) ON DELETE RESTRICT);
             CREATE TABLE check_result (id INTEGER PRIMARY KEY, observation_id INTEGER NOT NULL REFERENCES observation(id) ON DELETE RESTRICT, name TEXT, status TEXT, failure_type TEXT, failure_message TEXT, exception_json TEXT);
             CREATE TABLE coverage (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, dimension TEXT NOT NULL, percent REAL, covered INTEGER, total INTEGER, detail_json TEXT, UNIQUE(build_id, dimension));
             CREATE INDEX scenario_operation ON scenario(build_id, operation_id);
@@ -251,9 +330,14 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
         covops = {(o["method"], o["path"]): o for o in coverage.get("operations", [])}
         operation_ids = {}
         for method, opath in sorted(expected | observed_ops | scenario_ops):
+            path_item = (schema or {}).get("paths", {}).get(opath)
+            metadata = path_item.get(method.lower()) if isinstance(path_item, dict) else {}
+            metadata = metadata if isinstance(metadata, dict) else {}
+            tags = metadata.get("tags") or []
+            tags = [tag for tag in tags if isinstance(tag, str) and tag.strip()] if isinstance(tags, list) else []
             operation_ids[(method, opath)] = db.execute(
-                "INSERT INTO operation (build_id, method, path, expected, tested, coverage_json) VALUES (?,?,?,?,?,?)",
-                (build_id, method, opath, int((method, opath) in expected), int((method, opath) in observed_ops), json.dumps(covops.get((method, opath)))),
+                "INSERT INTO operation (build_id, method, path, expected, tested, coverage_json, tags_json, summary) VALUES (?,?,?,?,?,?,?,?)",
+                (build_id, method, opath, int((method, opath) in expected), int((method, opath) in observed_ops), json.dumps(covops.get((method, opath))), json.dumps(tags), metadata.get("summary") if isinstance(metadata.get("summary"), str) else None),
             ).lastrowid
         for s in scenarios:
             parts = (s["operation"] or "").split(" ", 1)
@@ -262,8 +346,10 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
                        (build_id, operation_ids.get(op_key), s["operation"], s["phase"], s["status"], s["skip_reason"]))
         for o in observations:
             observation_id = db.execute(
-                "INSERT INTO observation (build_id, operation_id, case_id, method, path, phase, response_status) VALUES (?,?,?,?,?,?,?)",
-                (build_id, operation_ids.get((o["method"], o["path"])), o["case_id"], o["method"], o["path"], o["phase"], o["response_status"]),
+                "INSERT INTO observation (build_id, operation_id, case_id, method, path, phase, response_status, request_json, response_json) VALUES (?,?,?,?,?,?,?,?,?)",
+                (build_id, operation_ids.get((o["method"], o["path"])), o["case_id"], o["method"], o["path"], o["phase"], o["response_status"],
+                 json.dumps(o.get("request")) if o.get("request") is not None else None,
+                 json.dumps(o.get("response")) if o.get("response") is not None else None),
             ).lastrowid
             for check in o["checks"] or []:
                 failure = ((check.get("failure_info") or {}).get("failure") or {})
@@ -274,6 +360,14 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
             detail = (coverage.get("summary") or {}).get("operations" if dim == "operation" else dim) or {}
             db.execute("INSERT INTO coverage (build_id, dimension, percent, covered, total, detail_json) VALUES (?,?,?,?,?,?)",
                        (build_id, dim, detail.get("percent"), detail.get("covered"), detail.get("total"), json.dumps(detail)))
+
+
+def refresh_report(output: Path) -> None:
+    try:
+        from report import generate_report
+        generate_report(output, output / "report.html")
+    except Exception as exc:
+        print(f"Warning: HTML report generation failed: {exc}", file=sys.stderr)
 
 
 def main() -> int:
@@ -288,6 +382,7 @@ def main() -> int:
     expected = set()
     config_raw = None
     schema_raw = None
+    schema = {}
     schema_location = None
     try:
         bid = build_id()
@@ -362,7 +457,8 @@ def main() -> int:
                     "schemathesis_version": importlib.metadata.version("schemathesis"), "tracecov_version": importlib.metadata.version("tracecov"), "config": config}
         verdict.update({"build": {k: v for k, v in identity.items() if k != "config"}, "read_only": config.get("read_only", False)})
         (build_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
-        write_database(build_dir / "evidence.sqlite", identity, expected, observations, scenarios, coverage, verdict)
+        write_database(build_dir / "evidence.sqlite", identity, expected, observations, scenarios, coverage, verdict, schema)
+        refresh_report(output)
         print(f"Evidence: {build_dir}")
         print("PASS" if verdict["passed"] else "FAIL: " + "; ".join(verdict["issues"]))
         return 0 if verdict["passed"] else 1
@@ -381,7 +477,8 @@ def main() -> int:
             (build_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
             try:
                 if not (build_dir / "evidence.sqlite").exists():
-                    write_database(build_dir / "evidence.sqlite", identity, expected, [], [], {}, verdict)
+                    write_database(build_dir / "evidence.sqlite", identity, expected, [], [], {}, verdict, schema)
+                refresh_report(output)
             except Exception:
                 pass
         print(f"API mitigation test failed: {exc}", file=sys.stderr)
