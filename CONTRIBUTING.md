@@ -36,11 +36,13 @@ Do not turn missing events or absent check results into passing checks. A matchi
 
 ## Test the container
 
-With Docker running, build the candidate image before release:
+With Docker running, build the candidate image from this image repository's root before release:
 
 ```sh
 docker build -t daviddkppw/api-mitigation-test:local .
 ```
+
+Then follow the [local image testing steps in the README](README.md#test-the-image-locally) to run it from the consuming API project's root and create that project's `artifacts` folder.
 
 Run it against an isolated API reachable **from the container**, mount the config and schema into the workspace, set a unique `API_MITIGATION_BUILD_ID`, and inspect `artifacts/<build-id>-<hash>/`. Check the process exit status, `verdict.json`, `evidence.sqlite`, JUnit, event stream, and TraceCov HTML/JSON. Repeat with a failing API or threshold and confirm that available evidence remains. Do not run this smoke test against production: normal Schemathesis phases include state-changing requests.
 

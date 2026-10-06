@@ -89,6 +89,24 @@ Store the token as a secured Bitbucket variable. The build identity is `bitbucke
 
 ## Direct Docker use
 
+### Test the image locally
+
+First, run this command from the root of the image repository (`api-mitigation-test`) to build the local image:
+
+```bash
+docker build -t daviddkppw/api-mitigation-test:local .
+```
+
+Then, switch to the root of the consuming API project, where `api-mitigation.yml` is located, and run:
+
+```bash
+docker run --rm -e API_MITIGATION_BUILD_ID=manual-2026-10-06-01 -v "${PWD}:/workspace" -w /workspace daviddkppw/api-mitigation-test:local --config api-mitigation.yml
+```
+
+This creates an `artifacts` folder in the consuming API project containing the test results, including per-run evidence and `report.html`. Use a new build ID for each subsequent run.
+
+### Use the published image
+
 ```sh
 docker run --rm \
   -e API_MITIGATION_BUILD_ID=manual-2026-09-25-1 \
