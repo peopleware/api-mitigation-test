@@ -283,7 +283,7 @@ def test_wrapper_contracts():
     assert list(action["inputs"]) == ["config"]
     assert action["runs"]["args"] == ["--config", "${{ inputs.config }}"]
     assert [item["name"] for item in pipe["variables"]] == ["CONFIG"]
-    assert pipe["image"] == "daviddkppw/api-mitigation-test:0.2.0"
+    assert pipe["image"] == "daviddkppw/api-mitigation-test:0.2.1"
 
 
 @pytest.mark.parametrize("wrapper,build_env,expected", [
