@@ -6,7 +6,7 @@ Use `python scripts/version.py <newversion|major|minor|patch|premajor|preminor|p
 2. Run the version script on the intended release commit. It creates the exact version tag locally; push the commit and tag to trigger `.github/workflows/release.yml`, which builds and pushes `daviddkppw/api-mitigation-test:<major>.<minor>.<patch>` and its Docker major tag.
 3. Verify the published Docker Hub digest and run the released image against the disposable test target. Move the GitHub `v<major>` Action tag to the latest compatible release commit and push it so `peopleware/api-mitigation-test@v<major>` resolves as documented. Coordinate changes to an existing major tag with maintainers and consumers.
 
-Publishing requires access to the GitHub repository, the Docker Hub namespace, and repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. A local Docker build does not publish an image. Do not claim a release is available until the image and Git tags are visible and verified.
+Publishing requires access to the GitHub repository, the Docker Hub namespace, and repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. After pushing the image, the workflow uploads `README.md` to the Docker Hub overview and converts relative documentation links to GitHub URLs. The Docker Hub token must have read/write/delete scope for the overview update. Verify that the overview includes the GitHub repository link and working documentation links. A local Docker build does not publish an image. Do not claim a release is available until the image and Git tags are visible and verified.
 
 ## Deploy and operate
 

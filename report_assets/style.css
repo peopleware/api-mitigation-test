@@ -34,10 +34,6 @@ h1, h2, h3, p { margin: 0; }
 .header-inner { max-width: 1440px; margin: auto; display: flex; justify-content: space-between; align-items: center; gap: 2rem; }
 .brand { display: flex; gap: .9rem; align-items: center; }
 .brand-mark { width: 40px; height: 44px; flex-shrink: 0; overflow: visible; }
-.brand-shield { fill: #223443; stroke: var(--blue); stroke-width: 1.7; stroke-linejoin: round; }
-.brand-connection { fill: none; stroke: var(--blue); stroke-width: 1.7; }
-.brand-endpoint { fill: var(--blue); }
-.brand-check { fill: none; stroke: var(--green); stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; }
 h1 { font-size: clamp(1.3rem, 2.4vw, 2rem); letter-spacing: -.035em; }
 .brand p { color: var(--muted); margin-top: .15rem; }
 .run-navigation { display: flex; align-items: center; gap: .45rem; min-width: 0; }

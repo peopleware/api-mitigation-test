@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="88" viewBox="0 0 40 44" role="img" aria-labelledby="title">
+  <title id="title">API mitigation test logo</title>
+  <path d="M20 3 33 8v11c0 10-5 17-13 21C12 36 7 29 7 19V8Z" fill="#223443" stroke="#94bfff" stroke-width="1.7" stroke-linejoin="round"/>
+  <path d="M3 17h8m18 0h8" fill="none" stroke="#94bfff" stroke-width="1.7"/>
+  <circle cx="3" cy="17" r="2" fill="#94bfff"/>
+  <circle cx="37" cy="17" r="2" fill="#94bfff"/>
+  <path d="m14 22 4 4 9-11" fill="none" stroke="#77d79a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
