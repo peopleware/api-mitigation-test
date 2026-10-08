@@ -16,6 +16,6 @@ Continuous mitigation assurance means repeating those checks as your API changes
 
 5. **Review and retain the evidence.** Investigate failures, fix regressions, and use owned, time-limited exceptions only when justified. Archive each build's `evidence.sqlite` under your project's access and retention rules; temporary CI artifacts are insufficient for durable assurance. See [reports, verdicts, and evidence](docs/evidence.md).
 
-The Docker image reference is `daviddkppw/api-mitigation-test:0.1.0`; the GitHub Action major-version reference is `peopleware/api-mitigation-test@v0`. Choose an available published version and keep it consistent across your pipeline.
+The Docker image reference is `daviddkppw/api-mitigation-test:0.2.0`; the GitHub Action major-version reference is `peopleware/api-mitigation-test@v0`. Choose an available published version and keep it consistent across your pipeline.
 
 For local testing, development, and release work, see [CONTRIBUTING.md](CONTRIBUTING.md).
