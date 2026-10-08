@@ -134,11 +134,12 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(exceptions, list):
         raise ValueError("check_exceptions must be a list")
     for item in exceptions:
-        if not isinstance(item, dict) or set(item) != {"method", "path", "failure_type", "reason", "owner", "expiry"}:
-            raise ValueError("Each check exception needs method, path, failure_type, reason, owner, expiry")
+        required_fields = {"failure_type", "reason", "owner", "expiry"}
+        if not isinstance(item, dict) or set(item) not in (required_fields, required_fields | {"method", "path"}):
+            raise ValueError("Each check exception needs failure_type, reason, owner, expiry; method and path must be provided together or both omitted")
         if any(not isinstance(v, str) or not v.strip() for v in item.values()):
             raise ValueError("Check exception fields must be nonempty strings")
-        if item["method"].upper() not in {m.upper() for m in HTTP_METHODS} or not item["path"].startswith("/"):
+        if "method" in item and (item["method"].upper() not in {m.upper() for m in HTTP_METHODS} or not item["path"].startswith("/")):
             raise ValueError("Invalid exception method or path")
         date.fromisoformat(item["expiry"])
     if "test_operations" in value:
@@ -274,7 +275,8 @@ def parse_events(path: Path) -> tuple[list[dict], list[dict]]:
 def exception_for(config: dict, method: str, path: str, failure_type: str) -> dict | None:
     today = date.today()
     for item in config.get("check_exceptions", []):
-        if item["method"].upper() == method and item["path"] == path and item["failure_type"] == failure_type and date.fromisoformat(item["expiry"]) >= today:
+        operation_matches = "method" not in item or (item["method"].upper() == method and item["path"] == path)
+        if operation_matches and item["failure_type"] == failure_type and date.fromisoformat(item["expiry"]) >= today:
             return item
     return None
 

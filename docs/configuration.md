@@ -52,6 +52,18 @@ test_operations:
 
 Each selector must match at least one schema operation with that method; otherwise the run fails before sending requests. Identical method/path selectors are rejected, while overlapping patterns select each operation once. Only the expanded operations are selected for testing and recorded in the verdict and evidence database. Schemathesis's probes of undeclared HTTP methods are disabled for these runs so it does not send requests outside the selection. Omit the setting to test every schema operation. When combined with `read_only: true`, every selected method must be `GET`, `HEAD`, or `OPTIONS`. TraceCov still measures coverage against the full schema, so coverage thresholds remain full-schema thresholds.
 
-Exception fields are exact method, schema path, and Schemathesis failure type matches. All six fields are required. Expired exceptions never match. Original failure details remain in `events.ndjson`, `verdict.json`, and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Treat reports as sensitive test data because they may contain API payloads.
+Each check exception requires `failure_type`, `reason`, `owner`, and `expiry`. Include both `method` and `path` to limit it to an exact HTTP method (case-insensitive) and OpenAPI schema path (case-sensitive). Omit both to accept that failure type across every operation:
+
+```yaml
+check_exceptions:
+  - failure_type: AcceptedNegativeData
+    reason: Legacy validation accepts invalid input while migration is in progress
+    owner: API team
+    expiry: '2026-12-31'
+```
+
+Providing only one of `method` or `path` is invalid. Global and operation-specific exceptions can coexist; the first unexpired matching entry supplies the recorded exception metadata. Failure types always match exactly, and expired exceptions never match. Original failure details remain in `events.ndjson`, `verdict.json`, and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Exceptions do not bypass coverage thresholds, missing evidence, or execution errors.
+
+Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Treat reports as sensitive test data because they may contain API payloads.
 
 See [CI integration](ci-integration.md) for execution and credentials, and [evidence](evidence.md) for verdict behavior.

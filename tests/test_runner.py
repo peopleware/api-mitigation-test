@@ -12,12 +12,65 @@ import pytest
 import yaml
 
 from fixture_api import SCHEMA
-from runner import path_glob_regex, schemathesis_executable, select_operations, write_database
+from runner import exception_for, path_glob_regex, read_config, schemathesis_executable, select_operations, write_database
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "runner.py"
 EXCEPTION = {"method": "POST", "path": "/items", "failure_type": "AcceptedNegativeData",
              "reason": "Fixture accepts missing body", "owner": "test team", "expiry": "2099-01-01"}
+GLOBAL_EXCEPTION = {key: value for key, value in EXCEPTION.items() if key not in {"method", "path"}}
+
+
+@pytest.mark.parametrize("fmt", ["json", "yaml"])
+@pytest.mark.parametrize("exception", [EXCEPTION, GLOBAL_EXCEPTION])
+def test_check_exception_config(tmp_path, fmt, exception):
+    config = {"schema": "schema.yaml", "base_url": "http://example.test",
+              "component_version": "1", "configuration_id": "test", "check_exceptions": [exception]}
+    path = tmp_path / f"config.{fmt}"
+    path.write_text(json.dumps(config) if fmt == "json" else yaml.safe_dump(config), encoding="utf-8")
+    assert read_config(path)[0] == config
+
+
+@pytest.mark.parametrize("exception", [
+    {**GLOBAL_EXCEPTION, "method": "GET"},
+    {**GLOBAL_EXCEPTION, "path": "/items"},
+    {**GLOBAL_EXCEPTION, "extra": "unexpected"},
+    {key: value for key, value in GLOBAL_EXCEPTION.items() if key != "owner"},
+    {**GLOBAL_EXCEPTION, "reason": ""},
+    {**GLOBAL_EXCEPTION, "failure_type": None},
+    {**GLOBAL_EXCEPTION, "expiry": "invalid"},
+    {**EXCEPTION, "method": "FAKE"},
+    {**EXCEPTION, "path": "items"},
+    {**EXCEPTION, "method": None},
+    "invalid",
+])
+def test_invalid_check_exception_config(tmp_path, exception):
+    config = {"schema": "schema.yaml", "base_url": "http://example.test",
+              "component_version": "1", "configuration_id": "test", "check_exceptions": [exception]}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_config(path)
+
+
+@pytest.mark.parametrize("method,path", [("POST", "/items"), ("GET", "/other"), ("DELETE", "/items/{id}")])
+def test_global_check_exception_matches_all_operations(method, path):
+    config = {"check_exceptions": [GLOBAL_EXCEPTION]}
+    assert exception_for(config, method, path, "AcceptedNegativeData") == GLOBAL_EXCEPTION
+    assert exception_for(config, method, path, "ServerError") is None
+    expired = {**GLOBAL_EXCEPTION, "expiry": "2020-01-01"}
+    assert exception_for({"check_exceptions": [expired]}, method, path, "AcceptedNegativeData") is None
+
+
+def test_scoped_and_global_exceptions_can_coexist():
+    scoped = {**EXCEPTION, "method": "post"}
+    config = {"check_exceptions": [scoped, GLOBAL_EXCEPTION]}
+    assert exception_for(config, "POST", "/items", "AcceptedNegativeData") == scoped
+    assert exception_for(config, "GET", "/items", "AcceptedNegativeData") == GLOBAL_EXCEPTION
+    assert exception_for(config, "POST", "/other", "AcceptedNegativeData") == GLOBAL_EXCEPTION
+    config["check_exceptions"] = [scoped]
+    assert exception_for(config, "GET", "/items", "AcceptedNegativeData") is None
+    assert exception_for(config, "POST", "/other", "AcceptedNegativeData") is None
 
 
 def test_schemathesis_cli_in_user_scripts(tmp_path, monkeypatch):
@@ -127,6 +180,20 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
         assert json.loads(response_json)["status"] is not None
     assert all(b"test-secret" not in path.read_bytes() for path in out.iterdir() if path.is_file())
     assert b"test-secret" not in (out.parent / "report.html").read_bytes()
+
+
+@pytest.mark.parametrize("fmt", ["json", "yaml"])
+def test_global_exception_preserves_failure_evidence(tmp_path, server, fmt):
+    proc, out = run(tmp_path, server, fmt=fmt, exceptions=[GLOBAL_EXCEPTION])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert verdict["passed"] and verdict["observed_failures"]
+    assert all(failure["exception"] == GLOBAL_EXCEPTION for failure in verdict["observed_failures"])
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        failures = db.execute("SELECT failure_type, exception_json FROM check_result WHERE status = 'failure'").fetchall()
+    assert failures
+    assert all(kind == "AcceptedNegativeData" and json.loads(exception) == GLOBAL_EXCEPTION for kind, exception in failures)
+    assert "AcceptedNegativeData" in (out / "events.ndjson").read_text()
 
 
 def test_unexplained_and_expired_exception_fail(tmp_path, server):
