@@ -9,7 +9,7 @@ component_version: 2.4.0
 configuration_id: staging-eu
 # Optional: test only GET, HEAD, and OPTIONS operations
 read_only: true
-# Optional: test only these exact method and schema path pairs
+# Optional: select methods with exact schema paths or path globs
 test_operations:
   - method: GET
     path: /orders
@@ -31,7 +31,26 @@ check_exceptions:
 
 `stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
 
-`test_operations` is optional. When present, it must be a nonempty list of exact HTTP method and OpenAPI schema path pairs (for example, `GET /orders/{orderId}`). Only those operations are selected for testing and recorded in the verdict and evidence database. Schemathesis's probes of undeclared HTTP methods are disabled for these runs so it does not send requests outside the list. Each pair must exist in the schema, and duplicates are rejected. Omit the setting to test every schema operation. When combined with `read_only: true`, every selected method must be `GET`, `HEAD`, or `OPTIONS`. TraceCov still measures coverage against the full schema, so coverage thresholds remain full-schema thresholds.
+`test_operations` is optional. When present, it must be a nonempty list of HTTP methods and exact OpenAPI schema paths or path globs. Methods are case-insensitive; paths are case-sensitive. Patterns match the entire schema path, including literal parameter placeholders such as `{orderId}`, rather than concrete request URLs.
+
+- `*` matches zero or more characters within a single path segment.
+- `?` matches exactly one character within a single path segment.
+- `**` matches across path segments. A trailing `/**` includes the base path itself: `/v1/admins/**` matches `/v1/admins`, `/v1/admins/{id}`, and `/v1/admins/{id}/roles`. `**/` also allows zero intermediate segments.
+- All other characters, including braces and square brackets, are literal.
+
+For example, select all GET, PUT, and POST operations under `/v1/admins`:
+
+```yaml
+test_operations:
+  - method: GET
+    path: /v1/admins/**
+  - method: PUT
+    path: /v1/admins/**
+  - method: POST
+    path: /v1/admins/**
+```
+
+Each selector must match at least one schema operation with that method; otherwise the run fails before sending requests. Identical method/path selectors are rejected, while overlapping patterns select each operation once. Only the expanded operations are selected for testing and recorded in the verdict and evidence database. Schemathesis's probes of undeclared HTTP methods are disabled for these runs so it does not send requests outside the selection. Omit the setting to test every schema operation. When combined with `read_only: true`, every selected method must be `GET`, `HEAD`, or `OPTIONS`. TraceCov still measures coverage against the full schema, so coverage thresholds remain full-schema thresholds.
 
 Exception fields are exact method, schema path, and Schemathesis failure type matches. All six fields are required. Expired exceptions never match. Original failure details remain in `events.ndjson`, `verdict.json`, and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Treat reports as sensitive test data because they may contain API payloads.
 

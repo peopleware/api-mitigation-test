@@ -179,6 +179,47 @@ def schema_operations(schema: dict) -> set[tuple[str, str]]:
     return {(method.upper(), path) for path, item in schema["paths"].items() if isinstance(item, dict) for method in item if method.lower() in HTTP_METHODS}
 
 
+def path_glob_regex(pattern: str) -> str:
+    """Translate a case-sensitive path glob; all non-wildcard characters are literal."""
+    parts = []
+    index = 0
+    while index < len(pattern):
+        if pattern[index:] == "/**":
+            parts.append("(?:/.*)?")
+            break
+        if pattern[index:index + 3] == "**/":
+            parts.append("(?:.*/)?")
+            index += 3
+        elif pattern[index:index + 2] == "**":
+            parts.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            parts.append("[^/]*")
+            index += 1
+        elif pattern[index] == "?":
+            parts.append("[^/]")
+            index += 1
+        else:
+            parts.append(re.escape(pattern[index]))
+            index += 1
+    return "".join(parts)
+
+
+def select_operations(selectors: list[dict], available: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    selected = set()
+    unmatched = []
+    for item in selectors:
+        method, path = item["method"].upper(), item["path"]
+        pattern = re.compile(path_glob_regex(path))
+        matches = {(m, p) for m, p in available if m == method and pattern.fullmatch(p)}
+        if not matches:
+            unmatched.append(f"{method} {path}")
+        selected.update(matches)
+    if unmatched:
+        raise ValueError(f"test_operations reference operations missing from schema (selectors matched no operations): {sorted(unmatched)}")
+    return selected
+
+
 def build_id() -> str:
     if os.getenv("GITHUB_ACTIONS") == "true":
         return f"github-{os.environ['GITHUB_RUN_ID']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
@@ -395,9 +436,7 @@ def main() -> int:
         schema_location, schema_raw, schema = load_schema(config, config_path)
         expected = schema_operations(schema)
         if "test_operations" in config:
-            selected = {(item["method"].upper(), item["path"]) for item in config["test_operations"]}
-            if unknown := selected - expected:
-                raise ValueError(f"test_operations reference operations missing from schema: {sorted(f'{m} {p}' for m, p in unknown)}")
+            selected = select_operations(config["test_operations"], expected)
             if config.get("read_only", False) and any(method not in READ_ONLY_METHODS for method, _ in selected):
                 raise ValueError("test_operations contains methods excluded by read_only")
             expected = selected

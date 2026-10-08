@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from fixture_api import SCHEMA
-from runner import schemathesis_executable, write_database
+from runner import path_glob_regex, schemathesis_executable, select_operations, write_database
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "runner.py"
@@ -187,9 +187,13 @@ def test_report_generation_warning_preserves_success_exit(tmp_path, server, monk
     assert next((tmp_path / "out").glob("*/evidence.sqlite")).exists()
 
 
-def test_selected_operations_only(tmp_path, server):
+@pytest.mark.parametrize("selected", [
+    [{"method": "get", "path": "/other"}, {"method": "POST", "path": "/items"}],
+    [{"method": "get", "path": "/oth*"}, {"method": "GET", "path": "/other/**"},
+     {"method": "POST", "path": "/it?ms"}],
+])
+def test_selected_operations_only(tmp_path, server, selected):
     schema = {**SCHEMA, "paths": {**SCHEMA["paths"], "/other": SCHEMA["paths"]["/items"]}}
-    selected = [{"method": "get", "path": "/other"}, {"method": "POST", "path": "/items"}]
     proc, out = run(tmp_path, server, local=True, schema=schema,
                     thresholds={"test_operations": selected})
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -198,6 +202,37 @@ def test_selected_operations_only(tmp_path, server):
     with sqlite3.connect(out / "evidence.sqlite") as db:
         assert db.execute("SELECT method, path FROM operation WHERE expected = 1 ORDER BY method, path").fetchall() == [("GET", "/other"), ("POST", "/items")]
         assert set(db.execute("SELECT DISTINCT p.method, p.path FROM observation o JOIN operation p ON p.id = o.operation_id")) == {("GET", "/other"), ("POST", "/items")}
+
+
+@pytest.mark.parametrize("pattern,path,matches", [
+    ("/v1/admins/**", "/v1/admins", True),
+    ("/v1/admins/**", "/v1/admins/{id}/roles", True),
+    ("/v1/admins/**", "/v1/admins-other", False),
+    ("/v1/admins/*", "/v1/admins/{id}", True),
+    ("/v1/admins/*", "/v1/admins/{id}/roles", False),
+    ("/v1/**/roles", "/v1/roles", True),
+    ("/v1/**/roles", "/v1/admins/{id}/roles", True),
+    ("/item?", "/items", True),
+    ("/item?", "/item/", False),
+    ("/items/{id}", "/items/{id}", True),
+    ("/items/{id}", "/items/123", False),
+    ("/items/[id].json", "/items/iXjson", False),
+    ("/items/[id].json", "/items/[id].json", True),
+    ("/items/**", "/ITEMS/123", False),
+])
+def test_path_glob_matching(pattern, path, matches):
+    import re
+
+    assert bool(re.fullmatch(path_glob_regex(pattern), path)) is matches
+
+
+def test_glob_selectors_expand_and_deduplicate():
+    expected = {(method, path) for method in ("GET", "PUT", "POST")
+                for path in ("/v1/admins", "/v1/admins/{id}", "/v1/admins/{id}/roles")}
+    available = expected | {("DELETE", "/v1/admins"), ("GET", "/v1/users")}
+    selectors = [{"method": method, "path": "/v1/admins/**"} for method in ("get", "PUT", "POST")]
+    selectors.append({"method": "GET", "path": "/v1/admins/{id}"})
+    assert select_operations(selectors, available) == expected
 
 
 def test_relational_event_edge_cases(tmp_path):
@@ -240,6 +275,8 @@ def test_relational_event_edge_cases(tmp_path):
 @pytest.mark.parametrize("operations,error", [
     ([], "nonempty list"),
     ([{"method": "GET", "path": "/missing"}], "missing from schema"),
+    ([{"method": "GET", "path": "/missing/**"}], "selectors matched no operations"),
+    ([{"method": "GET", "path": "/items"}, {"method": "PUT", "path": "/items/**"}], "selectors matched no operations"),
     ([{"method": "GET", "path": "/items"}, {"method": "get", "path": "/items"}], "Duplicate test operation"),
     ([{"method": "FAKE", "path": "/items"}], "Invalid test operation"),
 ])
@@ -250,8 +287,9 @@ def test_invalid_selected_operations_fail_with_evidence(tmp_path, server, operat
     assert (out / "evidence.sqlite").exists()
 
 
-def test_selected_operations_respect_read_only(tmp_path, server):
-    proc, out = run(tmp_path, server, thresholds={"read_only": True, "test_operations": [{"method": "POST", "path": "/items"}]})
+@pytest.mark.parametrize("path", ["/items", "/items/**"])
+def test_selected_operations_respect_read_only(tmp_path, server, path):
+    proc, out = run(tmp_path, server, thresholds={"read_only": True, "test_operations": [{"method": "POST", "path": path}]})
     assert proc.returncode == 2
     assert "excluded by read_only" in (out / "runner-error.json").read_text()
 
