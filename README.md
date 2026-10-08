@@ -1,153 +1,21 @@
 # API mitigation test
 
-Run [Schemathesis](https://schemathesis.readthedocs.io/en/latest/) against one OpenAPI target and collect [TraceCov](https://docs.tracecov.sh/) coverage. The Docker image, GitHub action, and Bitbucket pipe invoke the same `runner.py`. Version `0.1.0` is the Docker Hub tag and `v0` is the intended GitHub major-version tag. These names become usable after the repository and image are published.
+This Docker image tests an API against its OpenAPI contract using [Schemathesis](https://schemathesis.readthedocs.io/en/latest/) and records coverage with [TraceCov](https://docs.tracecov.sh/). Run it in your delivery pipeline to detect regressions, enforce coverage requirements, and retain evidence of the checks performed for each build.
 
-The runner enables Schemathesis's normal examples, coverage, fuzzing, and stateful phases. **It sends state-changing requests.** Point it at an isolated test environment with disposable data and suitable credentials. A successful build identifies exactly what was verified; it does not prove that the whole system is vulnerability-free.
+Continuous mitigation assurance means repeating those checks as your API changes and keeping their results reviewable. A passing run describes what was tested; it does not prove that the entire system is vulnerability-free.
 
-For live environments where only safe HTTP operations should be tested, set `read_only: true`. The runner then excludes `POST`, `PUT`, `PATCH`, `DELETE`, and `TRACE`, and runs only `GET`, `HEAD`, and `OPTIONS` operations. The default is `false`. This limits the methods Schemathesis sends; it cannot protect against an API that changes state in response to a nominally read-only method such as `GET`.
+## Set up continuous mitigation assurance
 
-## Project configuration
+1. **Prepare an isolated API environment with Docker Compose (recommended).** Keep one project-owned definition for the API, dependencies, migrations, and mitigation runner. Use your application's supported DBMS and identity provider, and seed representative data and permissions. Tests can change data, so use disposable state and wait for readiness. See the [recommended Compose workflow](docs/ci-integration.md#recommended-docker-compose-workflow).
 
-Commit one JSON or YAML file per target. A relative `schema` path is resolved from this file's directory. The schema may instead be an HTTP(S) URL. The five thresholds are independent and optional; omitted thresholds never gate the run. A configured threshold with unavailable coverage fails the run.
+2. **Commit a test configuration.** Supply a matching OpenAPI schema, a URL reachable from the runner, the component version, and a stable configuration ID. Decide which operations and coverage thresholds should gate delivery. See the [configuration reference](docs/configuration.md).
 
-```yaml
-schema: ./openapi.yaml
-base_url: https://test.example.net/api
-component_version: 2.4.0
-configuration_id: staging-eu
-# Optional: test only GET, HEAD, and OPTIONS operations
-read_only: true
-# Optional: test only these exact method and schema path pairs
-test_operations:
-  - method: GET
-    path: /orders
-min_operation_coverage: 90
-min_parameters_coverage: 60
-min_keywords_coverage: 40
-min_examples_coverage: 0
-min_responses_coverage: 75
-# Optional: cap generated cases per operation in the stateful phase
-stateful_max_examples: 20
-check_exceptions:
-  - method: POST
-    path: /orders
-    failure_type: AcceptedNegativeData
-    reason: Legacy endpoint accepts an empty request while migration is in progress
-    owner: API team
-    expiry: '2026-12-31'
-```
+3. **Provide suitable credentials.** Obtain an API access token for a test identity whose claims and application permissions match the scenarios you want to exercise. Pass it as `API_MITIGATION_BEARER_TOKEN` through the execution environment. The runner does not acquire or refresh tokens. See [authentication and environment requirements](docs/ci-integration.md#prepare-the-target).
 
-`stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
+4. **Run the tests in CI.** Test each relevant change before deployment, using the Docker image, GitHub Action, or Bitbucket pipe. Let a failing verdict fail the pipeline. Collect reports and service logs even when testing fails, then clean up disposable resources. See [CI integration examples](docs/ci-integration.md).
 
-`test_operations` is optional. When present, it must be a nonempty list of exact HTTP method and OpenAPI schema path pairs (for example, `GET /orders/{orderId}`). Only those operations are selected for testing and recorded in the verdict and evidence database. Schemathesis's probes of undeclared HTTP methods are disabled for these runs so it does not send requests outside the list. Each pair must exist in the schema, and duplicates are rejected. Omit the setting to test every schema operation. When combined with `read_only: true`, every selected method must be `GET`, `HEAD`, or `OPTIONS`. TraceCov still measures coverage against the full schema, so coverage thresholds remain full-schema thresholds.
+5. **Review and retain the evidence.** Investigate failures, fix regressions, and use owned, time-limited exceptions only when justified. Archive each build's `evidence.sqlite` under your project's access and retention rules; temporary CI artifacts are insufficient for durable assurance. See [reports, verdicts, and evidence](docs/evidence.md).
 
-Exception fields are exact method, schema path, and Schemathesis failure type matches. All six fields are required. Expired exceptions never match. Original failure details remain in `events.ndjson`, `verdict.json`, and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Treat reports as sensitive test data because they may contain API payloads.
+The Docker image reference is `daviddkppw/api-mitigation-test:0.1.0`; the GitHub Action major-version reference is `peopleware/api-mitigation-test@v0`. Choose an available published version and keep it consistent across your pipeline.
 
-## GitHub Actions
-
-```yaml
-jobs:
-  api-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: peopleware/api-mitigation-test@v0
-        with:
-          config: tests/api-mitigation.yaml
-        env:
-          API_MITIGATION_BEARER_TOKEN: ${{ secrets.API_MITIGATION_BEARER_TOKEN }}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: api-mitigation-evidence
-          path: artifacts/**
-          if-no-files-found: warn
-```
-
-The build identity is `github-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`. Configure a repository retention period and archive the SQLite file elsewhere if a longer audit period is required.
-
-## Bitbucket Pipelines
-
-```yaml
-pipelines:
-  default:
-    - step:
-        name: API mitigation test
-        script:
-          - pipe: docker://daviddkppw/api-mitigation-test:0.1.0
-            variables:
-              CONFIG: tests/api-mitigation.yaml
-              API_MITIGATION_BEARER_TOKEN: $API_MITIGATION_BEARER_TOKEN
-        artifacts:
-          - name: API mitigation evidence
-            paths:
-              - artifacts/**
-            capture-on: always
-```
-
-Store the token as a secured Bitbucket variable. The build identity is `bitbucket-<BITBUCKET_BUILD_NUMBER>`. Bitbucket Cloud CI artifacts last [at most 14 days](https://support.atlassian.com/bitbucket-cloud/docs/use-artifacts-in-steps/). **The consuming project must archive each build's `evidence.sqlite` durably**, including failed builds, using its own approved storage and retention rules. `capture-on: always` retains available evidence when the test step fails; it does not replace durable archival.
-
-## Direct Docker use
-
-### Test the image locally
-
-First, run this command from the root of the image repository (`api-mitigation-test`) to build the local image:
-
-```bash
-docker build -t daviddkppw/api-mitigation-test:local .
-```
-
-Then, switch to the root of the consuming API project, where `api-mitigation.yml` is located, and run:
-
-```bash
-docker run --rm -e API_MITIGATION_BUILD_ID=manual-2026-10-06-01 -v "${PWD}:/workspace" -w /workspace daviddkppw/api-mitigation-test:local --config api-mitigation.yml
-```
-
-This creates an `artifacts` folder in the consuming API project containing the test results, including per-run evidence and `report.html`. Use a new build ID for each subsequent run.
-
-### Use the published image
-
-```sh
-docker run --rm \
-  -e API_MITIGATION_BUILD_ID=manual-2026-09-25-1 \
-  -e API_MITIGATION_BEARER_TOKEN \
-  -v "$PWD:/workspace" -w /workspace \
-  daviddkppw/api-mitigation-test:0.1.0 --config tests/api-mitigation.yaml
-```
-
-The build ID is mandatory outside GitHub and Bitbucket. Each run creates `artifacts/<build-id>-<hash>/`. Set `API_MITIGATION_OUTPUT_DIR` to change the root. Reusing a build ID in the same root fails rather than overwriting evidence. The output includes `verdict.json`, `schemathesis.json`, `events.ndjson`, `junit.xml`, `coverage.html`, `coverage.json`, `console.log`, and `evidence.sqlite` when the tools produced them. The output root also receives a self-contained `report.html` that summarizes every `evidence.sqlite` currently under that root. The runner writes available evidence before returning a failure status. If HTML generation fails, it logs a warning without changing the test exit status.
-
-## HTML evidence report
-
-Open `artifacts/report.html` in a browser to review runs. The dark Swagger-style interface opens on the newest run. Use the run picker or previous/next buttons at the right of the header to navigate timestamps and verdicts. The selected run's metadata and operation, case, check, failure, and exception counts appear above operations grouped by entity. New runs use the first OpenAPI tag as the entity label and retain operation summaries; older or untagged operations use the resource name from their path. Expand an operation, then its phases and cases to inspect individual checks, skipped scenarios, exceptions, and HTTP exchanges. Search, result filters, and expand/collapse controls help locate evidence. The separate trends view compares unexplained failed checks and case counts within the same configuration ID and target URL and marks schema changes. Detailed coverage stays in the companion TraceCov `coverage.html`, linked when it is beside a database. The HTML report does not display coverage percentages.
-
-CI workspaces often contain only the current build. To rebuild a historical report after restoring archived databases into directories below one root, run:
-
-```sh
-python report.py --input-dir archived-evidence --output archived-evidence/report.html
-```
-
-The command recursively finds files named `evidence.sqlite`. It skips unreadable or unrelated SQLite files with warnings and fails if no readable evidence remains. A report generated from archived SQLite alone works offline; TraceCov links appear only when `coverage.html` is also beside a database. Older databases remain readable, but their HTTP exchanges show as unavailable.
-
-New databases retain sanitized request and response headers, URL, status, and JSON bodies for each observed case. Sensitive-looking fields are redacted before SQLite insertion; non-JSON and invalid JSON bodies are omitted. A JSON body is stored as at most 64 KiB of sanitized text, with a truncation label when needed. Schemathesis may truncate a large response before the runner receives it, in which case an incomplete JSON body is omitted. Redaction is best effort: custom secrets and failure messages can still contain sensitive data. Apply the same access controls and retention rules to `report.html` as to `evidence.sqlite`.
-
-## Verdict and evidence
-
-The runner fails on unexplained check failures, Schemathesis execution errors, incomplete runs, missing or invalid evidence, zero tested operations, and configured coverage thresholds below their minima. TraceCov's percentage is `null` when a dimension has no applicable items; an omitted threshold permits this, while a configured threshold requires numeric evidence. A passing check exists only when a `success` check result occurs in Schemathesis events. Missing results are never counted as passing.
-
-The per-build SQLite database records build/component/config/schema identity and SHA-256 hashes, tool versions, selected schema operations and whether they were tested, unexpected observed operations, scenario skips, observed cases and individual check results, sanitized HTTP exchanges for new observations, matched exception details, the five coverage measures, and the final verdict. Every table has a local 64-bit integer `id`. The `build` table keeps the run label in `build_number`; operations and coverage link to the build, scenarios and observations link to both the build and an operation when identifiable, and checks link to their observation. Foreign keys are enforced when writing. IDs are local to one file, so consumers combining archived files must assign new IDs. The raw event and coverage reports remain beside it for inspection.
-
-## Development and release
-
-Install Python 3.12, then `pip install -r requirements.txt pytest==8.4.2` and run `pytest -q`. The integration tests start a disposable local HTTP API. Docker integration requires a running Docker daemon. Run `python scripts/version.py patch` (or pass a version or another supported bump) to update release references, create a version commit, and tag it `v<version>`. The working tree must be clean. Push the commit and exact version tag to trigger the release workflow, which publishes `daviddkppw/api-mitigation-test:<version>` and its Docker major tag, then moves the GitHub Action major tag (for example, `v0`) to the release commit. Consumers can use the public Docker image as a Bitbucket pipe directly with the `docker://` prefix shown above. Using a Bitbucket-hosted pipe repository reference or submitting it for Atlassian's official list requires separate Bitbucket-side setup. Publishing requires Docker Hub access plus the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and write access to the `peopleware/api-mitigation-test` GitHub repository.
-
-## Glossary
-
-- **Operation:** An HTTP method and schema path, such as `POST /orders`.
-- **Case:** A generated request and observed response for an operation.
-- **Check:** A Schemathesis assertion evaluated against a case; a check failure has a concrete failure type.
-- **Exception:** A time-limited, owner-assigned acceptance of one method/path/failure-type combination; it preserves the original failure.
-- **Coverage:** TraceCov's measurement of exercised operations, parameters, JSON Schema keywords, examples, and responses.
-- **Configuration ID:** The consuming project's name for one target environment or setup.
-- **Build ID:** CI run identity, or the explicit identifier supplied for direct Docker use.
-- **Evidence database:** The self-contained SQLite summary for one build, intended for durable archival.
+For local testing, development, and release work, see [CONTRIBUTING.md](CONTRIBUTING.md).
