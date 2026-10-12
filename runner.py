@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import sysconfig
+import time
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from urllib.request import urlopen
 
@@ -291,6 +292,8 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
     if not observations or report.get("operations", {}).get("tested", 0) == 0:
         issues.append("Zero tested operations")
     tested = {(o["method"], o["path"]) for o in observations if o["method"] and o["path"]}
+    successful_operations = set()
+    blocked_operations = set()
     if len(tested) != report.get("operations", {}).get("tested"):
         issues.append("Tested operation count disagrees with event evidence")
     if not tested <= expected:
@@ -298,13 +301,18 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
     if not any(s["status"] == "success" for s in scenarios) and not any(s["status"] == "failure" for s in scenarios):
         issues.append("No completed test scenarios")
     for o in observations:
+        operation = (o["method"], o["path"])
         if not o["checks"] or o["response_status"] is None:
+            blocked_operations.add(operation)
             issues.append(f"Missing check or response evidence for {o['case_id']}")
             continue
         for check in o["checks"]:
             status = check.get("status")
             if status not in ("success", "failure"):
+                blocked_operations.add(operation)
                 issues.append(f"Invalid check status in {o['case_id']}")
+            if status == "success":
+                successful_operations.add(operation)
             if status == "failure":
                 failure = ((check.get("failure_info") or {}).get("failure") or {})
                 kind = failure.get("type")
@@ -313,11 +321,14 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
                 matched = exception_for(config, o["method"], o["path"], kind) if kind else None
                 failures.append({"case_id": o["case_id"], "method": o["method"], "path": o["path"], "check": check.get("name"), "failure_type": kind, "message": failure.get("message"), "exception": matched})
                 if not matched:
+                    blocked_operations.add(operation)
                     issues.append(f"Unexplained {kind or 'unknown'} failure: {o['method']} {o['path']}")
     reported_types = {(f.get("type"), op) for f in report.get("failures", []) for op in f.get("operations", [])}
     observed_types = {(f["failure_type"], f"{f['method']} {f['path']}") for f in failures}
     if reported_types - observed_types:
         issues.append("Verdict contains failures missing from event evidence")
+        blocked_operations.update(tuple(op.split(" ", 1)) for _, op in reported_types - observed_types)
+    blocked_operations.update(tuple(s["operation"].split(" ", 1)) for s in scenarios if s["status"] in ("error", "interrupted"))
     if report.get("test_cases", {}).get("without_checks", 0):
         issues.append("Schemathesis reported test cases without checks")
     summary = coverage.get("summary") or {}
@@ -339,11 +350,70 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         issues.append("Invalid TraceCov coverage report")
     if process_code not in (0, 1):
         issues.append(f"Schemathesis exited with code {process_code}")
+    checks = [check for o in observations for check in (o["checks"] or [])]
+    failed_checks = sum(check.get("status") == "failure" for check in checks)
+    accepted_checks = sum(
+        check.get("status") == "failure" and exception_for(
+            config, o["method"], o["path"],
+            ((check.get("failure_info") or {}).get("failure") or {}).get("type")) is not None
+        for o in observations for check in (o["checks"] or [])
+    )
     verdict = {"passed": not issues, "issues": sorted(set(issues)), "coverage_percent": percentages,
-               "operations": {"schema": len(expected), "tested": len(tested), "skipped": sorted(f"{m} {p}" for m, p in expected - tested)},
+               "checks": {"total": len(checks), "failed": failed_checks,
+                          "accepted": accepted_checks, "unexplained": failed_checks - accepted_checks},
+               "operations": {"schema": len(expected), "tested": len(tested),
+                              "passed": len((successful_operations & expected) - blocked_operations),
+                              "skipped": sorted(f"{m} {p}" for m, p in expected - tested)},
                "observed_cases": len(observations), "observed_failures": failures,
                "schemathesis": report}
     return verdict, failures
+
+
+def console_summary(verdict: dict, build_dir: Path, coverage: dict | None = None,
+                    config: dict | None = None, *, color: bool | None = None) -> str:
+    if color is None:
+        color = "NO_COLOR" not in os.environ
+    def paint(value, shade):
+        return f"\033[{shade}m{value}\033[0m" if color else str(value)
+
+    operations = verdict["operations"]
+    percentages = verdict["coverage_percent"]
+    checks = verdict.get("checks", {"total": 0, "failed": 0, "unexplained": 0, "accepted": 0})
+    summary = (coverage or {}).get("summary") or {}
+    config = config or {}
+    operation_counts = []
+    failed_operations = operations['schema'] - operations['passed']
+    if failed_operations:
+        operation_counts.append(paint(f"{failed_operations} failed", 31))
+    operation_counts.extend([paint(f"{operations['passed']} passed", 32),
+                             paint(f"{operations['schema']} discovered", 37)])
+    check_counts = []
+    if checks['failed']:
+        unexplained = f" ({checks['unexplained']} unexplained)" if checks['unexplained'] else ""
+        check_counts.append(paint(f"{checks['failed']} failed{unexplained}", 31))
+    if checks['accepted']:
+        check_counts.append(paint(f"{checks['accepted']} accepted failures", 33))
+    check_counts.append(paint(f"{checks['total']} total", 37))
+    lines = [
+        "Verdict:\t" + paint("PASS" if verdict["passed"] else "FAIL", 32 if verdict["passed"] else 31),
+        f"Evidence:\t{build_dir}", "",
+        "Operations:\t" + ", ".join(operation_counts),
+        "Checks:\t\t" + ", ".join(check_counts),
+        "Duration:\t" + paint(f"{verdict['duration_seconds']:.1f}s" if verdict.get("duration_seconds") is not None else "N/A", 37),
+        "", "==================== Coverage Summary ====================",
+    ]
+    for dim in DIMENSIONS:
+        name = "operations" if dim == "operation" else dim
+        entry = summary.get(name) or {}
+        pct = percentages.get(dim)
+        minimum = config.get(f"min_{dim}_coverage")
+        numeric = isinstance(pct, (int, float)) and not isinstance(pct, bool) and 0 <= pct <= 100
+        shade = (32 if pct >= minimum else 31) if numeric and minimum is not None else (31 if minimum is not None else 33)
+        percent = f"{pct:.2f}".rstrip("0").rstrip(".") + "%" if numeric else "N/A"
+        counts = f"({entry['covered']}/{entry['total']})" if entry.get("covered") is not None and entry.get("total") is not None else "(N/A)"
+        lines.append(f"{name.title()}:\t\t{paint(percent.ljust(6), shade)}\t{counts}")
+    lines.append("==========================================================")
+    return "\n".join(lines)
 
 
 def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], observations: list[dict], scenarios: list[dict], coverage: dict, verdict: dict, schema: dict | None = None) -> None:
@@ -414,6 +484,7 @@ def refresh_report(output: Path) -> None:
 
 
 def main() -> int:
+    started = time.perf_counter()
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
@@ -497,18 +568,19 @@ def main() -> int:
                     "schema_sha256": digest(schema_raw), "started_at": datetime.now(timezone.utc).isoformat(),
                     "schemathesis_version": importlib.metadata.version("schemathesis"), "tracecov_version": importlib.metadata.version("tracecov"), "config": config}
         verdict.update({"build": {k: v for k, v in identity.items() if k != "config"}, "read_only": config.get("read_only", False)})
+        verdict["duration_seconds"] = time.perf_counter() - started
         (build_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
         write_database(build_dir / "evidence.sqlite", identity, expected, observations, scenarios, coverage, verdict, schema)
         refresh_report(output)
-        print(f"Evidence: {build_dir}")
-        print("PASS" if verdict["passed"] else "FAIL: " + "; ".join(verdict["issues"]))
+        print(console_summary(verdict, build_dir, coverage, config))
         return 0 if verdict["passed"] else 1
     except Exception as exc:
         error = {"error": str(exc), "at": datetime.now(timezone.utc).isoformat()}
         target = build_dir or output
         (target / "runner-error.json").write_text(json.dumps(error, indent=2), encoding="utf-8")
         if build_dir is not None:
-            verdict = {"passed": False, "issues": [str(exc)], "coverage_percent": {}, "operations": {"schema": len(expected), "tested": 0, "skipped": sorted(f"{m} {p}" for m, p in expected)}, "observed_cases": 0, "observed_failures": []}
+            verdict = {"passed": False, "issues": [str(exc)], "coverage_percent": {}, "operations": {"schema": len(expected), "tested": 0, "passed": 0, "skipped": sorted(f"{m} {p}" for m, p in expected)}, "observed_cases": 0, "observed_failures": []}
+            verdict["duration_seconds"] = time.perf_counter() - started
             identity = {"build_id": bid, "component_version": config.get("component_version"), "configuration_id": config.get("configuration_id"),
                         "schema_location": schema_location or config.get("schema"), "base_url": config.get("base_url"),
                         "config_sha256": digest(config_raw) if config_raw is not None else None,
@@ -522,6 +594,7 @@ def main() -> int:
                 refresh_report(output)
             except Exception:
                 pass
+            print(console_summary(verdict, build_dir, config=config))
         print(f"API mitigation test failed: {exc}", file=sys.stderr)
         return 2
 

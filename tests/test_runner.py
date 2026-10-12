@@ -12,13 +12,103 @@ import pytest
 import yaml
 
 from fixture_api import SCHEMA
-from runner import exception_for, path_glob_regex, read_config, schemathesis_executable, select_operations, write_database
+from runner import assess, console_summary, exception_for, path_glob_regex, read_config, schemathesis_executable, select_operations, write_database
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "runner.py"
 EXCEPTION = {"method": "POST", "path": "/items", "failure_type": "AcceptedNegativeData",
              "reason": "Fixture accepts missing body", "owner": "test team", "expiry": "2099-01-01"}
 GLOBAL_EXCEPTION = {key: value for key, value in EXCEPTION.items() if key not in {"method", "path"}}
+
+
+@pytest.mark.parametrize("problem", [None, "missing_checks", "missing_response", "invalid_status", "failure", "reported_failure", "error"])
+def test_passed_operations_require_complete_successful_evidence(problem):
+    expected = {("GET", "/items"), ("POST", "/items"), ("GET", "/untested")}
+    observations = [{"case_id": "ok", "method": "GET", "path": "/items", "response_status": 200,
+                     "checks": [{"status": "success"}]},
+                    {"case_id": "post", "method": "POST", "path": "/items", "response_status": 200,
+                     "checks": [{"status": "success"}]}]
+    report = {"complete": True, "stop_reason": "completed", "operations": {"tested": 2}}
+    scenarios = [{"operation": "GET /items", "status": "success"}]
+    coverage = {"tracecov_version": "test", "operations": [], "summary": {"operations": {"percent": 66.7}}}
+    if problem in ("missing_checks", "missing_response", "invalid_status", "failure"):
+        observation = {**observations[0], "case_id": "bad"}
+        if problem == "missing_checks":
+            observation["checks"] = []
+        elif problem == "missing_response":
+            observation["response_status"] = None
+        elif problem == "invalid_status":
+            observation["checks"] = [{"status": "unknown"}]
+        else:
+            observation["checks"] = [{"status": "failure", "failure_info": {"failure": {"type": "ServerError"}}}]
+        observations.append(observation)
+    elif problem == "reported_failure":
+        report["failures"] = [{"type": "ServerError", "operations": ["GET /items"]}]
+    elif problem == "error":
+        scenarios.append({"operation": "GET /items", "status": "error"})
+    verdict, _ = assess({}, report, coverage, observations, scenarios, expected, 0)
+    assert verdict["operations"] == {"schema": 3, "tested": 2, "passed": 2 if problem is None else 1,
+                                     "skipped": ["GET /untested"]}
+
+
+@pytest.mark.parametrize("passed", [True, False])
+def test_console_summary_is_compact(passed):
+    verdict = {"passed": passed, "issues": [f"Missing check or response evidence for {i}" for i in range(2000)],
+               "operations": {"schema": 6, "tested": 6, "passed": 4},
+               "checks": {"failed": 41, "unexplained": 39, "accepted": 2, "total": 19849},
+               "duration_seconds": 24.3,
+               "coverage_percent": {"operation": 80, "parameters": 25.5, "keywords": 0, "examples": None, "responses": 50}}
+    coverage = {"summary": {"operations": {"covered": 6, "total": 6},
+                            "parameters": {"covered": 8, "total": 16}}}
+    assert console_summary(verdict, Path("artifacts/run"), coverage, color=False).splitlines() == [
+        "Verdict:\t" + ("PASS" if passed else "FAIL"),
+        f"Evidence:\t{Path('artifacts/run')}", "",
+        "Operations:\t2 failed, 4 passed, 6 discovered",
+        "Checks:\t\t41 failed (39 unexplained), 2 accepted failures, 19849 total",
+        "Duration:\t24.3s", "",
+        "==================== Coverage Summary ====================",
+        "Operations:\t\t80%   \t(6/6)",
+        "Parameters:\t\t25.5% \t(8/16)",
+        "Keywords:\t\t0%    \t(N/A)",
+        "Examples:\t\tN/A   \t(N/A)",
+        "Responses:\t\t50%   \t(N/A)",
+        "==========================================================",
+    ]
+
+
+@pytest.mark.parametrize("percent,minimum,shade", [(79, 80, 31), (80, 80, 32), (100, 80, 32),
+                                                   (50, None, 33), (None, None, 33), (None, 80, 31)])
+def test_console_summary_colors(percent, minimum, shade, monkeypatch):
+    verdict = {"passed": False, "operations": {"schema": 6, "passed": 4},
+               "coverage_percent": {"operation": percent}, "duration_seconds": 24.3,
+               "checks": {"failed": 41, "unexplained": 39, "accepted": 2, "total": 19849}}
+    config = {} if minimum is None else {"min_operation_coverage": minimum}
+    output = console_summary(verdict, Path("artifacts/run"), config=config, color=True)
+    assert "\033[31mFAIL\033[0m" in output
+    assert "\033[31m2 failed\033[0m" in output
+    assert "\033[32m4 passed\033[0m" in output
+    assert "\033[37m6 discovered\033[0m" in output
+    assert "\033[31m41 failed (39 unexplained)\033[0m" in output
+    assert "\033[33m2 accepted failures\033[0m" in output
+    assert "\033[37m19849 total\033[0m" in output
+    assert "\033[37m24.3s\033[0m" in output
+    label = f"{percent:g}%" if percent is not None else "N/A"
+    assert f"Operations:\t\t\033[{shade}m{label.ljust(6)}\033[0m" in output
+    verdict["passed"] = True
+    assert "\033[32mPASS\033[0m" in console_summary(verdict, Path("artifacts/run"), color=True)
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert "\033[" not in console_summary(verdict, Path("artifacts/run"))
+
+
+def test_check_totals_include_accepted_and_missing_response_evidence():
+    config = {"check_exceptions": [GLOBAL_EXCEPTION]}
+    observations = [{"case_id": "case", "method": "GET", "path": "/items", "response_status": None,
+                     "checks": [{"status": "success"},
+                                {"status": "failure", "failure_info": {"failure": {"type": "AcceptedNegativeData"}}},
+                                {"status": "failure", "failure_info": {"failure": {"type": "ServerError"}}}]}]
+    verdict, _ = assess(config, {"operations": {"tested": 1}}, {}, observations, [], {("GET", "/items")}, 1)
+    assert verdict["checks"] == {"total": 3, "failed": 2, "accepted": 1, "unexplained": 1}
+    assert verdict["operations"]["passed"] == 0
 
 
 @pytest.mark.parametrize("fmt", ["json", "yaml"])
@@ -162,6 +252,10 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
             assert columns <= {row[3] for row in db.execute(f"PRAGMA foreign_key_list({table})")}
         assert db.execute("SELECT COUNT(*) FROM operation WHERE expected = 1 AND tested = 1").fetchone()[0] == verdict["operations"]["tested"]
         assert db.execute("SELECT COUNT(*) FROM observation").fetchone()[0] == verdict["observed_cases"]
+        assert db.execute("SELECT COUNT(*) FROM check_result").fetchone()[0] == verdict["checks"]["total"]
+        assert db.execute("SELECT COUNT(*) FROM check_result WHERE status = 'failure'").fetchone()[0] == verdict["checks"]["failed"]
+        assert db.execute("SELECT COUNT(*) FROM check_result WHERE status = 'failure' AND exception_json IS NOT NULL").fetchone()[0] == verdict["checks"]["accepted"]
+        assert verdict["checks"]["unexplained"] == 0
         assert db.execute("SELECT COUNT(*) FROM check_result WHERE status = 'failure' AND exception_json IS NOT NULL").fetchone()[0] >= 1
         assert db.execute("SELECT percent FROM coverage WHERE dimension = 'operation'").fetchone()[0] == coverage["summary"]["operations"]["percent"]
         assert db.execute("SELECT COUNT(*) FROM observation o JOIN operation p ON o.operation_id = p.id WHERE o.build_id = p.build_id").fetchone()[0] == verdict["observed_cases"]
@@ -172,6 +266,8 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("DELETE FROM build WHERE id = ?", (build[0],))
     assert verdict["observed_failures"][0]["failure_type"] == "AcceptedNegativeData"
+    assert verdict["duration_seconds"] > 0
+    assert "Coverage Summary" in proc.stdout and "accepted failures" in proc.stdout
     assert (out / "junit.xml").stat().st_size and (out / "coverage.html").stat().st_size
     assert (out.parent / "report.html").stat().st_size
     with sqlite3.connect(out / "evidence.sqlite") as db:
@@ -265,7 +361,7 @@ def test_selected_operations_only(tmp_path, server, selected):
                     thresholds={"test_operations": selected})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     verdict = json.loads((out / "verdict.json").read_text())
-    assert verdict["operations"] == {"schema": 2, "tested": 2, "skipped": []}
+    assert verdict["operations"] == {"schema": 2, "tested": 2, "passed": 2, "skipped": []}
     with sqlite3.connect(out / "evidence.sqlite") as db:
         assert db.execute("SELECT method, path FROM operation WHERE expected = 1 ORDER BY method, path").fetchall() == [("GET", "/other"), ("POST", "/items")]
         assert set(db.execute("SELECT DISTINCT p.method, p.path FROM observation o JOIN operation p ON p.id = o.operation_id")) == {("GET", "/other"), ("POST", "/items")}
