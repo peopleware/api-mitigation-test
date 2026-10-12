@@ -91,7 +91,7 @@ def test_auth_subrequest_evidence_round_trip(tmp_path):
                             "test_cases": {"without_checks": 1146}},
                         {"tracecov_version": "test", "operations": []}, observations, scenarios, {("GET", "/items")}, 0)
     assert verdict["passed"]
-    assert verdict["cases"] == {"total": 1147, "verified_by_parent": 1146}
+    assert verdict["cases"] == {"total": 1147, "failed": 0, "verified_by_parent": 1146}
     assert verdict["checks"]["total"] == 1
     assert "1146 verified by parent check, 1147 total" in console_summary(verdict, tmp_path, color=False)
     identity = dict.fromkeys(("component_version", "configuration_id", "schema_location", "base_url", "config_sha256",
@@ -153,6 +153,7 @@ def test_console_summary_is_compact(passed):
         "Verdict:\t" + ("PASS" if passed else "FAIL"),
         f"Evidence:\t{Path('artifacts/run')}", "",
         "Operations:\t2 failed, 4 passed, 6 discovered",
+        "Cases:\t\t0 total",
         "Checks:\t\t41 failed (39 unexplained), 2 accepted failures, 19849 total",
         "Duration:\t24.3s", "",
         "==================== Coverage Summary ====================",
@@ -163,6 +164,22 @@ def test_console_summary_is_compact(passed):
         "Responses:\t\t50%   \t(N/A)",
         "==========================================================",
     ]
+
+
+@pytest.mark.parametrize("failed,verified", [(0, 0), (2, 0), (0, 3), (2, 3)])
+def test_console_case_counts_and_order(failed, verified):
+    verdict = {"passed": not failed, "operations": {"schema": 1, "passed": 1},
+               "coverage_percent": {}, "cases": {"total": 10, "failed": failed, "verified_by_parent": verified}}
+    parts = ([f"{failed} failed"] if failed else []) + ([f"{verified} verified by parent check"] if verified else []) + ["10 total"]
+    lines = console_summary(verdict, Path("artifacts/run"), color=False).splitlines()
+    assert lines[3].startswith("Operations:")
+    assert lines[4] == "Cases:\t\t" + ", ".join(parts)
+    assert lines[5].startswith("Checks:")
+    colored = console_summary(verdict, Path("artifacts/run"), color=True)
+    if failed:
+        assert f"\033[31m{failed} failed\033[0m" in colored
+    else:
+        assert "0 failed" not in colored
 
 
 @pytest.mark.parametrize("percent,minimum,shade", [(79, 80, 31), (80, 80, 32), (100, 80, 32),
@@ -197,6 +214,7 @@ def test_check_totals_include_accepted_and_missing_response_evidence():
                                 {"status": "failure", "failure_info": {"failure": {"type": "ServerError"}}}]}]
     verdict, _ = assess(config, {"operations": {"tested": 1}}, {}, observations, [], {("GET", "/items")}, 1)
     assert verdict["checks"] == {"total": 3, "failed": 2, "accepted": 1, "unexplained": 1}
+    assert verdict["cases"]["failed"] == 1
     assert verdict["operations"]["passed"] == 0
 
 

@@ -46,6 +46,8 @@ Qualifying subrequests count as verified cases and do not block the operation or
 
 The per-build SQLite database records build/component/config/schema identity and SHA-256 hashes, tool versions, selected schema operations and whether they were tested, unexpected observed operations, scenario skips, observed cases and individual check results, sanitized HTTP exchanges for new observations, matched exception details, the five coverage measures, and the final verdict. Every table has a local 64-bit integer `id`. The `build` table keeps the run label in `build_number`; operations and coverage link to the build, scenarios and observations link to both the build and an operation when identifiable, and checks link to their observation. Foreign keys are enforced when writing. IDs are local to one file, so consumers combining archived files must assign new IDs. The raw event and coverage reports remain beside it for inspection.
 
+The console places `Cases` between `Operations` and `Checks`, showing total cases, parent-verified cases when present, and failed cases only when nonzero. A case with one or more failed checks counts once, including checks accepted by an exception, matching the check failure totals. The verdict records this count in `cases.failed`.
+
 ## Glossary
 
 - **Operation:** An HTTP method and schema path, such as `POST /orders`.

@@ -370,6 +370,8 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         issues.append(f"Schemathesis exited with code {process_code}")
     checks = [check for o in observations for check in (o["checks"] or [])]
     failed_checks = sum(check.get("status") == "failure" for check in checks)
+    failed_cases = sum(any(check.get("status") == "failure" for check in (o["checks"] or []))
+                       for o in observations)
     accepted_checks = sum(
         check.get("status") == "failure" and exception_for(
             config, o["method"], o["path"],
@@ -377,7 +379,7 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         for o in observations for check in (o["checks"] or [])
     )
     verdict = {"passed": not issues, "issues": sorted(set(issues)), "coverage_percent": percentages,
-               "cases": {"total": len(observations), "verified_by_parent": verified_by_parent},
+               "cases": {"total": len(observations), "failed": failed_cases, "verified_by_parent": verified_by_parent},
                "checks": {"total": len(checks), "failed": failed_checks,
                           "accepted": accepted_checks, "unexplained": failed_checks - accepted_checks},
                "operations": {"schema": len(expected), "tested": len(tested),
@@ -397,6 +399,7 @@ def console_summary(verdict: dict, build_dir: Path, coverage: dict | None = None
 
     operations = verdict["operations"]
     percentages = verdict["coverage_percent"]
+    cases = verdict.get("cases") or {"total": verdict.get("observed_cases", 0)}
     checks = verdict.get("checks", {"total": 0, "failed": 0, "unexplained": 0, "accepted": 0})
     summary = (coverage or {}).get("summary") or {}
     config = config or {}
@@ -413,17 +416,21 @@ def console_summary(verdict: dict, build_dir: Path, coverage: dict | None = None
     if checks['accepted']:
         check_counts.append(paint(f"{checks['accepted']} accepted failures", 33))
     check_counts.append(paint(f"{checks['total']} total", 37))
+    case_counts = []
+    if cases.get("failed"):
+        case_counts.append(paint(f"{cases['failed']} failed", 31))
+    if cases.get("verified_by_parent"):
+        case_counts.append(paint(f"{cases['verified_by_parent']} verified by parent check", 32))
+    case_counts.append(paint(f"{cases['total']} total", 37))
     lines = [
         "Verdict:\t" + paint("PASS" if verdict["passed"] else "FAIL", 32 if verdict["passed"] else 31),
         f"Evidence:\t{build_dir}", "",
         "Operations:\t" + ", ".join(operation_counts),
+        "Cases:\t\t" + ", ".join(case_counts),
         "Checks:\t\t" + ", ".join(check_counts),
         "Duration:\t" + paint(f"{verdict['duration_seconds']:.1f}s" if verdict.get("duration_seconds") is not None else "N/A", 37),
         "", "==================== Coverage Summary ====================",
     ]
-    cases = verdict.get("cases") or {}
-    if cases.get("verified_by_parent"):
-        lines.insert(4, f"Cases:\t\t{cases['verified_by_parent']} verified by parent check, {cases['total']} total")
     for dim in DIMENSIONS:
         name = "operations" if dim == "operation" else dim
         entry = summary.get(name) or {}
