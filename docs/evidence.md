@@ -9,6 +9,22 @@ Open `artifacts/report.html` in a browser to review runs. The dark Swagger-style
 CI workspaces often contain only the current build. To rebuild a historical report after restoring archived databases into directories below one root, run:
 
 ```sh
+docker run --rm -v "$PWD:/workspace" -w /workspace \
+  daviddkppw/api-mitigation-test:<version> report
+```
+
+In PowerShell:
+
+```powershell
+docker run --rm -v "${PWD}:/workspace" -w /workspace `
+  daviddkppw/api-mitigation-test:<version> report
+```
+
+The `report` command only reads existing evidence; it does not run mitigation tests or require API configuration, credentials, or a build ID. By default it reads `artifacts/` (or `API_MITIGATION_OUTPUT_DIR` when set) and writes `report.html` there, replacing an existing report. For another archive location, append `--input-dir archived-evidence`; use `--output archived-evidence/custom.html` to choose a different output file. Paths are relative to the container's working directory unless absolute.
+
+For a local Python installation, the equivalent command is:
+
+```sh
 python report.py --input-dir archived-evidence --output archived-evidence/report.html
 ```
 

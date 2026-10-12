@@ -167,9 +167,12 @@ def generate_report(input_dir: Path, output: Path) -> tuple[int, list[str]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build an offline HTML report from archived evidence.sqlite files")
-    parser.add_argument("--input-dir", type=Path, required=True, help="Directory recursively containing evidence.sqlite files")
-    parser.add_argument("--output", type=Path, required=True, help="HTML file to create")
+    parser.add_argument("--input-dir", type=Path, default=Path(os.environ.get("API_MITIGATION_OUTPUT_DIR", "artifacts")),
+                        help="Directory recursively containing evidence.sqlite files (default: API_MITIGATION_OUTPUT_DIR or artifacts)")
+    parser.add_argument("--output", type=Path, help="HTML file to create (default: <input-dir>/report.html)")
     args = parser.parse_args()
+    if args.output is None:
+        args.output = args.input_dir / "report.html"
     try:
         count, warnings = generate_report(args.input_dir, args.output)
     except (OSError, ValueError) as exc:

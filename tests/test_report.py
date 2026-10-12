@@ -1,9 +1,11 @@
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -38,6 +40,63 @@ def embedded_data(path: Path) -> dict:
     match = re.search(r'<script id="report-data" type="application/json">(.*?)</script>', html, re.S)
     assert match
     return json.loads(match.group(1))
+
+
+@pytest.mark.parametrize("mode", ["default", "input", "output", "environment"])
+def test_report_command_defaults_and_overrides(tmp_path, monkeypatch, mode):
+    from report import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("API_MITIGATION_OUTPUT_DIR", raising=False)
+    folder = tmp_path / ("artifacts" if mode == "default" else "archive")
+    database = make_database(folder / "run", "archived", "2026-01-01T00:00:00+00:00")
+    original = database.read_bytes()
+    args = ["report.py"]
+    output = folder / "report.html"
+    if mode == "environment":
+        monkeypatch.setenv("API_MITIGATION_OUTPUT_DIR", str(folder))
+    elif mode != "default":
+        monkeypatch.setenv("API_MITIGATION_OUTPUT_DIR", str(tmp_path / "unused"))
+        args += ["--input-dir", str(folder)]
+    if mode == "output":
+        output = tmp_path / "custom.html"
+        args += ["--output", str(output)]
+    output.write_text("old report", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", args)
+    assert main() == 0
+    assert embedded_data(output)["runs"][0]["build_number"] == "archived"
+    assert database.read_bytes() == original
+
+
+@pytest.mark.parametrize("has_evidence", [True, False])
+def test_shell_report_command_without_test_configuration(tmp_path, has_evidence):
+    root = Path(__file__).resolve().parents[1]
+    git_sh = Path("C:/Program Files/Git/usr/bin/sh.exe")
+    shell = str(git_sh) if git_sh.is_file() else shutil.which("sh") or shutil.which("bash")
+    if not shell:
+        pytest.skip("Shell wrapper needs sh or bash")
+
+    def shell_path(value):
+        value = Path(value).as_posix()
+        return f"/{value[0].lower()}/{value[3:]}" if len(value) > 2 and value[1:3] == ":/" else value
+
+    env = os.environ.copy()
+    for key in ("CONFIG", "BITBUCKET_BUILD_NUMBER", "BITBUCKET_CLONE_DIR", "GITHUB_WORKSPACE",
+                "API_MITIGATION_BUILD_ID", "API_MITIGATION_OUTPUT_DIR", "API_MITIGATION_BEARER_TOKEN"):
+        env.pop(key, None)
+    if os.name == "nt":
+        env["PATH"] = shell_path(Path(sys.executable).parent) + ":/usr/bin:/bin"
+    if has_evidence:
+        make_database(tmp_path / "artifacts" / "run", "archived", "2026-01-01T00:00:00+00:00")
+    proc = subprocess.run([shell, shell_path(root / "bitbucket-pipe/run.sh"), "report"],
+                          cwd=tmp_path, env=env, capture_output=True, text=True)
+    if has_evidence:
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert embedded_data(tmp_path / "artifacts/report.html")["runs"][0]["build_number"] == "archived"
+    else:
+        assert proc.returncode == 1
+        assert "No evidence.sqlite files found" in proc.stderr
+    assert not list(tmp_path.rglob("verdict.json"))
 
 
 def test_report_aggregates_sorts_and_handles_older_and_bad_databases(tmp_path):

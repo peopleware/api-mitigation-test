@@ -6,6 +6,10 @@ if [ -n "${GITHUB_WORKSPACE:-}" ]; then
 elif [ -n "${BITBUCKET_CLONE_DIR:-}" ]; then
     cd "$BITBUCKET_CLONE_DIR"
 fi
+if [ "${1:-}" = "report" ]; then
+    shift
+    exec python "$app_dir/report.py" "$@"
+fi
 if [ "$#" -gt 0 ]; then
     exec python "$app_dir/runner.py" "$@"
 fi
