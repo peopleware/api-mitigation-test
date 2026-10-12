@@ -55,9 +55,22 @@ vm.runInNewContext(fs.readFileSync(process.argv[3], 'utf8'), context);
 const get = id => elements.get(id);
 
 assert.equal(context.outcome([{ checks: [], response_status: 200 }]), 'neutral');
+const unexecuted = { case_id: 'generated', checks: [], response_status: null, request: null, response: null };
+assert.equal(context.outcome([unexecuted]), 'untested');
+const unexecutedDetails = context.renderCase(unexecuted);
+unexecutedDetails.open = true;
+assert(unexecutedDetails.textContent.includes('Not executed'));
+assert(unexecutedDetails.textContent.includes('earns no pass or coverage credit'));
+assert(!unexecutedDetails.textContent.includes('Incomplete evidence'));
+assert.equal(context.outcome([{ ...unexecuted, request: {} }]), 'neutral');
+assert.equal(context.outcome([{ ...unexecuted, response: {} }]), 'neutral');
+assert.equal(context.outcome([{ ...unexecuted, execution_status: 'executed' }]), 'neutral');
+assert.equal(context.outcome([{ ...unexecuted, execution_status: 'unknown' }]), 'neutral');
 const authChild = { case_id: 'auth-child', checks: [], response_status: 401,
   verification: { parent_case_id: 'parent', check: 'ignored_auth', status: 'success' } };
 assert.equal(context.outcome([authChild]), 'pass');
+assert.equal(context.outcome([authChild, unexecuted]), 'pass');
+assert.equal(context.outcome([unexecuted], true, [{ status: 'error' }]), 'neutral');
 assert.equal(context.outcome([{ ...authChild, response_status: null }]), 'neutral');
 const authDetails = context.renderCase(authChild);
 authDetails.open = true;

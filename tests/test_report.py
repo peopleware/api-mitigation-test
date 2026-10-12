@@ -108,6 +108,7 @@ def test_report_aggregates_sorts_and_handles_older_and_bad_databases(tmp_path):
         db.execute("ALTER TABLE observation DROP COLUMN response_json")
         db.execute("ALTER TABLE observation DROP COLUMN parent_case_id")
         db.execute("ALTER TABLE observation DROP COLUMN verification_json")
+        db.execute("ALTER TABLE observation DROP COLUMN execution_status")
         db.execute("ALTER TABLE operation DROP COLUMN tags_json")
         db.execute("ALTER TABLE operation DROP COLUMN summary")
     broken = tmp_path / "archive" / "broken"
@@ -123,8 +124,32 @@ def test_report_aggregates_sorts_and_handles_older_and_bad_databases(tmp_path):
     assert data["runs"][1]["coverage_href"] is None
     assert data["runs"][1]["http_available"] is False
     assert data["runs"][1]["operations"][0]["cases"][0]["request"] is None
+    assert data["runs"][1]["operations"][0]["cases"][0]["execution_status"] == "executed"
     assert data["runs"][1]["operations"][0]["entity"] == "Items"
     assert data["runs"][0]["operations"][0]["scenarios"][1]["skip_reason"] == "no examples"
+
+
+@pytest.mark.parametrize("has_http", [True, False])
+def test_archived_generated_case_classification_preserves_verdict(tmp_path, has_http):
+    from report import load_database
+
+    database = make_database(tmp_path / "run", "archive", "2026-01-01T00:00:00+00:00", failed=True)
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE observation DROP COLUMN execution_status")
+        db.execute("INSERT INTO observation (build_id, operation_id, case_id, phase) VALUES (1, 1, 'generated', 'stateful')")
+        if not has_http:
+            db.execute("ALTER TABLE observation DROP COLUMN request_json")
+            db.execute("ALTER TABLE observation DROP COLUMN response_json")
+    original = database.read_bytes()
+    run = load_database(database, tmp_path / "report.html")[0]
+    assert not run["passed"]
+    assert run["issues"] == ["bad"]
+    assert run["generated_count"] == 2
+    assert run["unexecuted_count"] == int(has_http)
+    assert run["executed_count"] == 1
+    assert run["unknown_execution_count"] == int(not has_http)
+    assert run["operations"][0]["cases"][1]["execution_status"] == ("not_executed" if has_http else "unknown")
+    assert database.read_bytes() == original
 
 
 def test_operation_entity_uses_schema_tag_with_legacy_path_fallback(tmp_path):

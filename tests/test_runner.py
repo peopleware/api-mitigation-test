@@ -91,9 +91,10 @@ def test_auth_subrequest_evidence_round_trip(tmp_path):
                             "test_cases": {"without_checks": 1146}},
                         {"tracecov_version": "test", "operations": []}, observations, scenarios, {("GET", "/items")}, 0)
     assert verdict["passed"]
-    assert verdict["cases"] == {"total": 1147, "failed": 0, "verified_by_parent": 1146}
+    assert verdict["cases"] == {"total": 1147, "generated": 1147, "executed": 1147,
+                                "unexecuted": 0, "failed": 0, "verified_by_parent": 1146}
     assert verdict["checks"]["total"] == 1
-    assert "1146 verified by parent check, 1147 total" in console_summary(verdict, tmp_path, color=False)
+    assert "1146 verified by parent check, 1147 generated, 1147 executed, 0 not executed" in console_summary(verdict, tmp_path, color=False)
     identity = dict.fromkeys(("component_version", "configuration_id", "schema_location", "base_url", "config_sha256",
                               "schema_sha256", "started_at", "schemathesis_version", "tracecov_version"), "test")
     identity.update(build_id="auth-run", config={})
@@ -108,6 +109,65 @@ def test_auth_subrequest_evidence_round_trip(tmp_path):
     assert child["checks"] == []
     assert child["parent_case_id"] == "parent"
     assert child["verification"] == {"parent_case_id": "parent", "check": "ignored_auth", "status": "success"}
+
+
+@pytest.mark.parametrize("evidence", ["none", "request", "response", "checks", "unknown_check", "interaction"])
+def test_generated_cases_without_execution_do_not_block_verdict(tmp_path, evidence):
+    from report import load_database
+
+    event = auth_event()
+    recorder = event["ScenarioFinished"]["recorder"]
+    recorder["cases"]["generated"] = {"value": {"method": "POST", "path": "/unexecuted"},
+                                        "is_transition_applied": False}
+    if evidence == "request":
+        recorder["interactions"]["generated"] = {"request": {"method": "POST", "uri": "http://test/unexecuted"}}
+    elif evidence == "response":
+        recorder["interactions"]["generated"] = {"response": {"status_code": 200}}
+    elif evidence in ("checks", "unknown_check"):
+        recorder["checks"]["generated"] = [{"status": "success" if evidence == "checks" else "unknown"}]
+    elif evidence == "interaction":
+        recorder["interactions"]["generated"] = {"timestamp": 1}
+    path = tmp_path / "events.ndjson"
+    path.write_text(json.dumps(event), encoding="utf-8")
+    observations, scenarios = parse_events(path)
+    executed = evidence != "none"
+    expected = {("GET", "/items"), ("POST", "/unexecuted")}
+    verdict, _ = assess({}, {"complete": True, "stop_reason": "completed",
+                            "operations": {"tested": 1 + executed},
+                            "test_cases": {"without_checks": 1 + (evidence not in ("checks", "unknown_check"))}},
+                        {"tracecov_version": "test", "operations": []}, observations, scenarios, expected, 0)
+    assert verdict["passed"] == (not executed)
+    assert verdict["cases"]["generated"] == verdict["cases"]["total"] == 3
+    assert verdict["cases"]["executed"] == 2 + executed
+    assert verdict["cases"]["unexecuted"] == int(not executed)
+    assert verdict["cases"]["failed"] == 0
+    assert verdict["operations"]["passed"] == 1
+    assert verdict["operations"]["tested"] == 1 + executed
+    assert any("Missing check or response evidence for generated" in issue for issue in verdict["issues"]) == executed
+    identity = dict.fromkeys(("component_version", "configuration_id", "schema_location", "base_url", "config_sha256",
+                              "schema_sha256", "started_at", "schemathesis_version", "tracecov_version"), "test")
+    identity.update(build_id="generated-run", config={})
+    database = tmp_path / "evidence.sqlite"
+    write_database(database, identity, expected, observations, scenarios, {}, verdict)
+    run = load_database(database, tmp_path / "report.html")[0]
+    assert run["generated_count"] == 3
+    assert run["executed_count"] == 2 + executed
+    assert run["unexecuted_count"] == int(not executed)
+    operation = next(op for op in run["operations"] if op["method"] == "POST")
+    assert operation["tested"] == executed
+    assert operation["cases"][0]["execution_status"] == ("executed" if executed else "not_executed")
+
+
+def test_only_unexecuted_cases_cannot_pass():
+    verdict, _ = assess({}, {"complete": True, "stop_reason": "completed", "operations": {"tested": 0},
+                            "test_cases": {"without_checks": 1}},
+                        {"tracecov_version": "test", "operations": []},
+                        [{"case_id": "generated", "method": "GET", "path": "/items",
+                          "response_status": None, "checks": []}],
+                        [{"operation": "GET /items", "status": "success"}], {("GET", "/items")}, 0)
+    assert not verdict["passed"]
+    assert verdict["issues"] == ["Zero tested operations"]
+    assert verdict["operations"]["tested"] == verdict["operations"]["passed"] == 0
 
 
 @pytest.mark.parametrize("problem", [None, "missing_checks", "missing_response", "invalid_status", "failure", "reported_failure", "error"])

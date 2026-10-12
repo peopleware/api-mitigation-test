@@ -20,10 +20,16 @@ const STATUS = {
   fail: { label: 'Failed', icon: '×', edge: '#92515b' },
   accepted: { label: 'Accepted failure', icon: '!', edge: '#8b7546' },
   neutral: { label: 'Incomplete evidence', icon: '?', edge: '#556170' },
+  not_executed: { label: 'Not executed', icon: '–', edge: '#454d58' },
   untested: { label: 'Not tested', icon: '–', edge: '#454d58' },
 };
 function checksOf(cases) { return cases.flatMap(item => item.checks); }
+function notExecuted(item) {
+  if (item.execution_status != null) return item.execution_status === 'not_executed';
+  return !item.checks.length && !item.verification && item.response_status == null && item.request == null && item.response == null;
+}
 function outcome(cases, tested = true, scenarios = []) {
+  cases = cases.filter(item => !notExecuted(item));
   const checks = checksOf(cases);
   if (checks.some(check => check.status === 'failure' && !check.exception)) return 'fail';
   if (checks.some(check => !['success', 'failure'].includes(check.status)) ||
@@ -32,7 +38,7 @@ function outcome(cases, tested = true, scenarios = []) {
   if (checks.some(check => check.status === 'failure')) return 'accepted';
   return tested && (checks.length || cases.some(item => item.verification)) ? 'pass' : 'untested';
 }
-function statusPill(kind) { return pill(STATUS[kind].label, kind === 'untested' ? 'neutral' : kind); }
+function statusPill(kind) { return pill(STATUS[kind].label, ['untested', 'not_executed'].includes(kind) ? 'neutral' : kind); }
 function metrics(cases) {
   const checks = checksOf(cases);
   return { cases: cases.length, checks: checks.length, failed: checks.filter(x => x.status === 'failure' && !x.exception).length };
@@ -123,7 +129,7 @@ function renderRun() {
   const expected = run.operations.filter(op => op.expected);
   const values = [
     ['Operations', expected.filter(op => op.tested).length, 'of ' + expected.length + ' selected operations tested', 'var(--green)'],
-    ['Cases', run.case_count, 'Observed request and response cases' + (run.verified_by_parent_count ? ' · ' + run.verified_by_parent_count + ' verified by parent check' : ''), 'var(--blue)'],
+    ['Cases', run.generated_count ?? run.case_count, 'Generated cases · ' + (run.executed_count ?? run.case_count) + ' executed · ' + (run.unexecuted_count || 0) + ' not executed' + (run.unknown_execution_count ? ' · ' + run.unknown_execution_count + ' execution unknown' : '') + (run.verified_by_parent_count ? ' · ' + run.verified_by_parent_count + ' verified by parent check' : ''), 'var(--blue)'],
     ['Checks', run.check_count, (run.success_count || 0) + ' successful check results', 'var(--blue)'],
     ['Failed checks', run.failure_count, (run.failure_count - run.accepted_count) + ' unexplained failures', run.failure_count ? 'var(--red)' : 'var(--green)'],
     ['Exceptions', run.accepted_count, 'Failures accepted by an exception', 'var(--amber)'],
@@ -238,10 +244,11 @@ function renderPhases(op) {
 }
 function renderCase(item) {
   const summary = node('summary');
-  summary.append(node('span', 'case-id', 'Case ' + (item.case_id || 'unknown')), node('span', 'muted', 'HTTP ' + (item.response_status ?? 'unknown') + ' · ' + item.checks.length + ' checks'), statusPill(outcome([item])));
+  summary.append(node('span', 'case-id', 'Case ' + (item.case_id || 'unknown')), node('span', 'muted', 'HTTP ' + (item.response_status ?? 'unknown') + ' · ' + item.checks.length + ' checks'), statusPill(notExecuted(item) ? 'not_executed' : outcome([item])));
   return lazyDetails('case', summary, () => {
     const body = node('div', 'case-body');
-    if (item.verification) body.append(node('p', 'notice', 'Verified by ' + item.verification.check + ' on parent case ' + item.verification.parent_case_id + '.'));
+    if (notExecuted(item)) body.append(node('p', 'notice', 'No HTTP interaction or check results recorded. This generated case is classified as not executed and earns no pass or coverage credit.'));
+    else if (item.verification) body.append(node('p', 'notice', 'Verified by ' + item.verification.check + ' on parent case ' + item.verification.parent_case_id + '.'));
     else if (!item.checks.length) body.append(node('p', 'notice', 'No check results recorded.'));
     for (const check of item.checks) {
       const row = node('div', 'check'), kind = check.status === 'failure' ? (check.exception ? 'accepted' : 'fail') : check.status === 'success' ? 'pass' : 'neutral';

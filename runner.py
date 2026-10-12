@@ -20,6 +20,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from urllib.request import urlopen
 
 import yaml
+from evidence import not_executed
 
 DIMENSIONS = ("operation", "parameters", "keywords", "examples", "responses")
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
@@ -284,6 +285,7 @@ def parse_events(path: Path) -> tuple[list[dict], list[dict]]:
                 "response": sanitize_exchange(interaction, "response"),
                 "checks": checks.get(case_id),
                 "parent_case_id": parent_id, "verification": verification,
+                "execution_status": "executed" if interaction or checks.get(case_id) else "not_executed",
             })
     return observations, scenarios
 
@@ -306,7 +308,7 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         issues.append("Schemathesis reported execution errors")
     if not observations or report.get("operations", {}).get("tested", 0) == 0:
         issues.append("Zero tested operations")
-    tested = {(o["method"], o["path"]) for o in observations if o["method"] and o["path"]}
+    tested = {(o["method"], o["path"]) for o in observations if o["method"] and o["path"] and not not_executed(o)}
     successful_operations = set()
     blocked_operations = set()
     if len(tested) != report.get("operations", {}).get("tested"):
@@ -316,6 +318,8 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
     if not any(s["status"] == "success" for s in scenarios) and not any(s["status"] == "failure" for s in scenarios):
         issues.append("No completed test scenarios")
     for o in observations:
+        if not_executed(o):
+            continue
         operation = (o["method"], o["path"])
         if (not o["checks"] and not o.get("verification")) or o["response_status"] is None:
             blocked_operations.add(operation)
@@ -347,7 +351,8 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         blocked_operations.update(tuple(op.split(" ", 1)) for _, op in reported_types - observed_types)
     blocked_operations.update(tuple(s["operation"].split(" ", 1)) for s in scenarios if s["status"] in ("error", "interrupted"))
     verified_by_parent = sum(not o["checks"] and o.get("verification") is not None for o in observations)
-    if report.get("test_cases", {}).get("without_checks", 0) > verified_by_parent:
+    unexecuted = sum(not_executed(o) for o in observations)
+    if report.get("test_cases", {}).get("without_checks", 0) > verified_by_parent + unexecuted:
         issues.append("Schemathesis reported test cases without checks")
     summary = coverage.get("summary") or {}
     percentages = {}
@@ -379,7 +384,9 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         for o in observations for check in (o["checks"] or [])
     )
     verdict = {"passed": not issues, "issues": sorted(set(issues)), "coverage_percent": percentages,
-               "cases": {"total": len(observations), "failed": failed_cases, "verified_by_parent": verified_by_parent},
+               "cases": {"total": len(observations), "generated": len(observations),
+                         "executed": len(observations) - unexecuted, "unexecuted": unexecuted,
+                         "failed": failed_cases, "verified_by_parent": verified_by_parent},
                "checks": {"total": len(checks), "failed": failed_checks,
                           "accepted": accepted_checks, "unexplained": failed_checks - accepted_checks},
                "operations": {"schema": len(expected), "tested": len(tested),
@@ -421,7 +428,12 @@ def console_summary(verdict: dict, build_dir: Path, coverage: dict | None = None
         case_counts.append(paint(f"{cases['failed']} failed", 31))
     if cases.get("verified_by_parent"):
         case_counts.append(paint(f"{cases['verified_by_parent']} verified by parent check", 32))
-    case_counts.append(paint(f"{cases['total']} total", 37))
+    if "generated" in cases:
+        case_counts.extend([paint(f"{cases['generated']} generated", 37),
+                            paint(f"{cases['executed']} executed", 37),
+                            paint(f"{cases['unexecuted']} not executed", 37)])
+    else:
+        case_counts.append(paint(f"{cases['total']} total", 37))
     lines = [
         "Verdict:\t" + paint("PASS" if verdict["passed"] else "FAIL", 32 if verdict["passed"] else 31),
         f"Evidence:\t{build_dir}", "",
@@ -452,7 +464,7 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
             CREATE TABLE build (id INTEGER PRIMARY KEY, build_number TEXT NOT NULL UNIQUE, component_version TEXT, configuration_id TEXT, schema_location TEXT, base_url TEXT, config_sha256 TEXT, schema_sha256 TEXT, started_at TEXT, schemathesis_version TEXT, tracecov_version TEXT, passed INTEGER, verdict_json TEXT);
             CREATE TABLE operation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, method TEXT NOT NULL, path TEXT NOT NULL, expected INTEGER NOT NULL, tested INTEGER NOT NULL, coverage_json TEXT, tags_json TEXT, summary TEXT, UNIQUE(build_id, method, path), UNIQUE(build_id, id));
             CREATE TABLE scenario (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, operation_id INTEGER, operation TEXT, phase TEXT, status TEXT, skip_reason TEXT, FOREIGN KEY(build_id, operation_id) REFERENCES operation(build_id, id) ON DELETE RESTRICT);
-            CREATE TABLE observation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, operation_id INTEGER, case_id TEXT, method TEXT, path TEXT, phase TEXT, response_status INTEGER, request_json TEXT, response_json TEXT, parent_case_id TEXT, verification_json TEXT, FOREIGN KEY(build_id, operation_id) REFERENCES operation(build_id, id) ON DELETE RESTRICT);
+            CREATE TABLE observation (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, operation_id INTEGER, case_id TEXT, method TEXT, path TEXT, phase TEXT, response_status INTEGER, request_json TEXT, response_json TEXT, parent_case_id TEXT, verification_json TEXT, execution_status TEXT, FOREIGN KEY(build_id, operation_id) REFERENCES operation(build_id, id) ON DELETE RESTRICT);
             CREATE TABLE check_result (id INTEGER PRIMARY KEY, observation_id INTEGER NOT NULL REFERENCES observation(id) ON DELETE RESTRICT, name TEXT, status TEXT, failure_type TEXT, failure_message TEXT, exception_json TEXT);
             CREATE TABLE coverage (id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES build(id) ON DELETE RESTRICT, dimension TEXT NOT NULL, percent REAL, covered INTEGER, total INTEGER, detail_json TEXT, UNIQUE(build_id, dimension));
             CREATE INDEX scenario_operation ON scenario(build_id, operation_id);
@@ -464,6 +476,7 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
             tuple(identity[k] for k in ("build_id", "component_version", "configuration_id", "schema_location", "base_url", "config_sha256", "schema_sha256", "started_at", "schemathesis_version", "tracecov_version")) + (int(verdict["passed"]), json.dumps(verdict)),
         ).lastrowid
         observed_ops = {(o["method"], o["path"]) for o in observations if o["method"] and o["path"]}
+        tested_ops = {(o["method"], o["path"]) for o in observations if o["method"] and o["path"] and not not_executed(o)}
         scenario_ops = set()
         for scenario in scenarios:
             parts = (scenario["operation"] or "").split(" ", 1)
@@ -479,7 +492,7 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
             tags = [tag for tag in tags if isinstance(tag, str) and tag.strip()] if isinstance(tags, list) else []
             operation_ids[(method, opath)] = db.execute(
                 "INSERT INTO operation (build_id, method, path, expected, tested, coverage_json, tags_json, summary) VALUES (?,?,?,?,?,?,?,?)",
-                (build_id, method, opath, int((method, opath) in expected), int((method, opath) in observed_ops), json.dumps(covops.get((method, opath))), json.dumps(tags), metadata.get("summary") if isinstance(metadata.get("summary"), str) else None),
+                (build_id, method, opath, int((method, opath) in expected), int((method, opath) in tested_ops), json.dumps(covops.get((method, opath))), json.dumps(tags), metadata.get("summary") if isinstance(metadata.get("summary"), str) else None),
             ).lastrowid
         for s in scenarios:
             parts = (s["operation"] or "").split(" ", 1)
@@ -488,11 +501,12 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
                        (build_id, operation_ids.get(op_key), s["operation"], s["phase"], s["status"], s["skip_reason"]))
         for o in observations:
             observation_id = db.execute(
-                "INSERT INTO observation (build_id, operation_id, case_id, method, path, phase, response_status, request_json, response_json, parent_case_id, verification_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO observation (build_id, operation_id, case_id, method, path, phase, response_status, request_json, response_json, parent_case_id, verification_json, execution_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (build_id, operation_ids.get((o["method"], o["path"])), o["case_id"], o["method"], o["path"], o["phase"], o["response_status"],
                  json.dumps(o.get("request")) if o.get("request") is not None else None,
                  json.dumps(o.get("response")) if o.get("response") is not None else None,
-                 o.get("parent_case_id"), json.dumps(o["verification"]) if o.get("verification") else None),
+                 o.get("parent_case_id"), json.dumps(o["verification"]) if o.get("verification") else None,
+                 "not_executed" if not_executed(o) else "executed"),
             ).lastrowid
             for check in o["checks"] or []:
                 failure = ((check.get("failure_info") or {}).get("failure") or {})

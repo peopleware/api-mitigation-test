@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 from urllib.parse import quote
+from evidence import not_executed
 
 
 def decode_json(value, default=None):
@@ -94,14 +95,20 @@ def load_database(path: Path, output: Path) -> list[dict]:
                                         "checks": checks_by_observation.get(observation["id"], []),
                                         "parent_case_id": observation.get("parent_case_id"),
                                         "verification": decode_json(observation.get("verification_json")),
+                                        "execution_status": observation.get("execution_status"),
                                         "request": decode_json(observation.get("request_json")) if has_http else None,
                                         "response": decode_json(observation.get("response_json")) if has_http else None})
+                case = target["cases"][-1]
+                if case["execution_status"] is None:
+                    case["execution_status"] = ("not_executed" if has_http else "unknown") if not_executed(case) else "executed"
             if unlinked["cases"] or unlinked["scenarios"]:
                 operations.append(unlinked)
             verdict = decode_json(build.get("verdict_json"), {}) or {}
             check_count = len(check_rows)
             failure_count = sum(check["status"] == "failure" for check in check_rows)
             accepted_count = sum(check["status"] == "failure" and check["exception_json"] is not None for check in check_rows)
+            unexecuted_count = sum(not_executed(case) for op in operations for case in op["cases"])
+            unknown_count = sum(case["execution_status"] == "unknown" for op in operations for case in op["cases"])
             result.append({"build_number": build["build_number"], "started_at": build["started_at"],
                            "component_version": build["component_version"],
                            "configuration_id": build["configuration_id"], "base_url": build["base_url"],
@@ -110,6 +117,10 @@ def load_database(path: Path, output: Path) -> list[dict]:
                            "schema_sha256": build["schema_sha256"], "passed": bool(build["passed"]),
                            "issues": verdict.get("issues", []), "operations": operations,
                            "case_count": len(observation_rows), "check_count": check_count,
+                           "generated_count": len(observation_rows),
+                           "executed_count": len(observation_rows) - unexecuted_count - unknown_count,
+                           "unexecuted_count": unexecuted_count,
+                           "unknown_execution_count": unknown_count,
                            "verified_by_parent_count": sum(decode_json(o.get("verification_json")) is not None for o in observation_rows),
                            "failure_count": failure_count, "accepted_count": accepted_count,
                            "success_count": sum(check["status"] == "success" for check in check_rows),
