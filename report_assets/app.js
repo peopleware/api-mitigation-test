@@ -27,10 +27,10 @@ function outcome(cases, tested = true, scenarios = []) {
   const checks = checksOf(cases);
   if (checks.some(check => check.status === 'failure' && !check.exception)) return 'fail';
   if (checks.some(check => !['success', 'failure'].includes(check.status)) ||
-      cases.some(item => !item.checks.length || item.response_status == null) ||
+      cases.some(item => (!item.checks.length && !item.verification) || item.response_status == null) ||
       scenarios.some(item => ['error', 'failure'].includes(item.status)) && !checks.some(check => check.status === 'failure')) return 'neutral';
   if (checks.some(check => check.status === 'failure')) return 'accepted';
-  return tested && checks.length ? 'pass' : 'untested';
+  return tested && (checks.length || cases.some(item => item.verification)) ? 'pass' : 'untested';
 }
 function statusPill(kind) { return pill(STATUS[kind].label, kind === 'untested' ? 'neutral' : kind); }
 function metrics(cases) {
@@ -123,7 +123,7 @@ function renderRun() {
   const expected = run.operations.filter(op => op.expected);
   const values = [
     ['Operations', expected.filter(op => op.tested).length, 'of ' + expected.length + ' selected operations tested', 'var(--green)'],
-    ['Cases', run.case_count, 'Observed request and response cases', 'var(--blue)'],
+    ['Cases', run.case_count, 'Observed request and response cases' + (run.verified_by_parent_count ? ' · ' + run.verified_by_parent_count + ' verified by parent check' : ''), 'var(--blue)'],
     ['Checks', run.check_count, (run.success_count || 0) + ' successful check results', 'var(--blue)'],
     ['Failed checks', run.failure_count, (run.failure_count - run.accepted_count) + ' unexplained failures', run.failure_count ? 'var(--red)' : 'var(--green)'],
     ['Exceptions', run.accepted_count, 'Failures accepted by an exception', 'var(--amber)'],
@@ -241,7 +241,8 @@ function renderCase(item) {
   summary.append(node('span', 'case-id', 'Case ' + (item.case_id || 'unknown')), node('span', 'muted', 'HTTP ' + (item.response_status ?? 'unknown') + ' · ' + item.checks.length + ' checks'), statusPill(outcome([item])));
   return lazyDetails('case', summary, () => {
     const body = node('div', 'case-body');
-    if (!item.checks.length) body.append(node('p', 'notice', 'No check results recorded.'));
+    if (item.verification) body.append(node('p', 'notice', 'Verified by ' + item.verification.check + ' on parent case ' + item.verification.parent_case_id + '.'));
+    else if (!item.checks.length) body.append(node('p', 'notice', 'No check results recorded.'));
     for (const check of item.checks) {
       const row = node('div', 'check'), kind = check.status === 'failure' ? (check.exception ? 'accepted' : 'fail') : check.status === 'success' ? 'pass' : 'neutral';
       row.append(pill(kind === 'accepted' ? 'ACCEPTED' : kind === 'pass' ? 'PASS' : kind === 'fail' ? 'FAIL' : 'UNKNOWN', kind));

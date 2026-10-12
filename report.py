@@ -92,6 +92,8 @@ def load_database(path: Path, output: Path) -> list[dict]:
                 target["cases"].append({"case_id": observation["case_id"], "phase": observation["phase"],
                                         "response_status": observation["response_status"],
                                         "checks": checks_by_observation.get(observation["id"], []),
+                                        "parent_case_id": observation.get("parent_case_id"),
+                                        "verification": decode_json(observation.get("verification_json")),
                                         "request": decode_json(observation.get("request_json")) if has_http else None,
                                         "response": decode_json(observation.get("response_json")) if has_http else None})
             if unlinked["cases"] or unlinked["scenarios"]:
@@ -108,6 +110,7 @@ def load_database(path: Path, output: Path) -> list[dict]:
                            "schema_sha256": build["schema_sha256"], "passed": bool(build["passed"]),
                            "issues": verdict.get("issues", []), "operations": operations,
                            "case_count": len(observation_rows), "check_count": check_count,
+                           "verified_by_parent_count": sum(decode_json(o.get("verification_json")) is not None for o in observation_rows),
                            "failure_count": failure_count, "accepted_count": accepted_count,
                            "success_count": sum(check["status"] == "success" for check in check_rows),
                            "coverage_href": coverage_link(path, output), "http_available": has_http})

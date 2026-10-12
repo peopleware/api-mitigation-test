@@ -106,6 +106,8 @@ def test_report_aggregates_sorts_and_handles_older_and_bad_databases(tmp_path):
     with sqlite3.connect(older) as db:
         db.execute("ALTER TABLE observation DROP COLUMN request_json")
         db.execute("ALTER TABLE observation DROP COLUMN response_json")
+        db.execute("ALTER TABLE observation DROP COLUMN parent_case_id")
+        db.execute("ALTER TABLE observation DROP COLUMN verification_json")
         db.execute("ALTER TABLE operation DROP COLUMN tags_json")
         db.execute("ALTER TABLE operation DROP COLUMN summary")
     broken = tmp_path / "archive" / "broken"

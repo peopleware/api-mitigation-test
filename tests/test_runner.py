@@ -12,13 +12,102 @@ import pytest
 import yaml
 
 from fixture_api import SCHEMA
-from runner import assess, console_summary, exception_for, path_glob_regex, read_config, schemathesis_executable, select_operations, write_database
+from runner import assess, console_summary, exception_for, parse_events, path_glob_regex, read_config, schemathesis_executable, select_operations, write_database
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "runner.py"
 EXCEPTION = {"method": "POST", "path": "/items", "failure_type": "AcceptedNegativeData",
              "reason": "Fixture accepts missing body", "owner": "test team", "expiry": "2099-01-01"}
 GLOBAL_EXCEPTION = {key: value for key, value in EXCEPTION.items() if key not in {"method", "path"}}
+
+
+def auth_event(child_count=1):
+    value = {"method": "GET", "path": "/items"}
+    cases = {"parent": {"value": value, "parent_id": None, "transition": None}}
+    interactions = {"parent": {"response": {"status_code": 200}}}
+    for index in range(child_count):
+        cases[f"auth-{index}"] = {"value": value.copy(), "parent_id": "parent", "transition": None}
+        interactions[f"auth-{index}"] = {"response": {"status_code": 401}}
+    return {"ScenarioFinished": {"phase": "fuzzing", "status": "success", "recorder": {
+        "label": "GET /items", "cases": cases, "interactions": interactions,
+        "checks": {"parent": [{"name": "ignored_auth", "status": "success"}]}}}}
+
+
+@pytest.mark.parametrize("problem", [None, "forbidden", "missing_parent", "self_parent", "other_operation",
+                                     "transition", "missing_parent_response", "missing_response", "wrong_response",
+                                     "missing_auth_check", "failed_auth_check", "invalid_auth_check", "conflicting_auth_check",
+                                     "own_failure", "other_scenario", "unaccounted_without_checks"])
+def test_auth_subrequests_require_successful_parent_evidence(tmp_path, problem):
+    event = auth_event()
+    recorder = event["ScenarioFinished"]["recorder"]
+    child = recorder["cases"]["auth-0"]
+    if problem in ("missing_parent", "self_parent"):
+        child["parent_id"] = "absent" if problem == "missing_parent" else "auth-0"
+    elif problem == "other_operation":
+        child["value"]["method"] = "POST"
+    elif problem == "transition":
+        child["transition"] = {"id": "stateful-link"}
+    elif problem == "missing_parent_response":
+        recorder["interactions"].pop("parent")
+    elif problem in ("forbidden", "missing_response", "wrong_response"):
+        recorder["interactions"]["auth-0"]["response"]["status_code"] = {"forbidden": 403, "missing_response": None, "wrong_response": 200}[problem]
+    elif problem == "missing_auth_check":
+        recorder["checks"]["parent"][0]["name"] = "other_check"
+    elif problem in ("failed_auth_check", "invalid_auth_check"):
+        recorder["checks"]["parent"][0]["status"] = "failure" if problem == "failed_auth_check" else "unknown"
+    elif problem == "conflicting_auth_check":
+        recorder["checks"]["parent"].append({"name": "ignored_auth", "status": "failure"})
+    elif problem == "own_failure":
+        recorder["checks"]["auth-0"] = [{"name": "custom", "status": "failure", "failure_info": {"failure": {"type": "BadResponse"}}}]
+    events = [event]
+    if problem == "other_scenario":
+        separate = auth_event()
+        separate["ScenarioFinished"]["recorder"]["cases"].pop("auth-0")
+        recorder["cases"].pop("parent")
+        recorder["checks"] = {}
+        events.insert(0, separate)
+    path = tmp_path / "events.ndjson"
+    path.write_text("\n".join(json.dumps(item) for item in events), encoding="utf-8")
+    observations, scenarios = parse_events(path)
+    report = {"complete": True, "stop_reason": "completed", "operations": {"tested": 1 if problem != "other_operation" else 2},
+              "test_cases": {"without_checks": 2 if problem == "unaccounted_without_checks" else int(problem != "own_failure")}}
+    expected = {("GET", "/items")} | ({("POST", "/items")} if problem == "other_operation" else set())
+    verdict, _ = assess({}, report, {"tracecov_version": "test", "operations": []}, observations, scenarios, expected, 0)
+    verified = problem in (None, "forbidden", "unaccounted_without_checks")
+    assert verdict["cases"]["verified_by_parent"] == int(verified)
+    assert verdict["passed"] == (problem in (None, "forbidden"))
+    auth = next(o for o in observations if o["case_id"] == "auth-0")
+    assert bool(auth["verification"]) == verified
+    assert auth["parent_case_id"] == child["parent_id"]
+
+
+def test_auth_subrequest_evidence_round_trip(tmp_path):
+    from report import load_database
+
+    path = tmp_path / "events.ndjson"
+    path.write_text(json.dumps(auth_event(1146)), encoding="utf-8")
+    observations, scenarios = parse_events(path)
+    verdict, _ = assess({}, {"complete": True, "stop_reason": "completed", "operations": {"tested": 1},
+                            "test_cases": {"without_checks": 1146}},
+                        {"tracecov_version": "test", "operations": []}, observations, scenarios, {("GET", "/items")}, 0)
+    assert verdict["passed"]
+    assert verdict["cases"] == {"total": 1147, "verified_by_parent": 1146}
+    assert verdict["checks"]["total"] == 1
+    assert "1146 verified by parent check, 1147 total" in console_summary(verdict, tmp_path, color=False)
+    identity = dict.fromkeys(("component_version", "configuration_id", "schema_location", "base_url", "config_sha256",
+                              "schema_sha256", "started_at", "schemathesis_version", "tracecov_version"), "test")
+    identity.update(build_id="auth-run", config={})
+    database = tmp_path / "evidence.sqlite"
+    write_database(database, identity, {("GET", "/items")}, observations, scenarios, {}, verdict)
+    run = load_database(database, tmp_path / "report.html")[0]
+    assert run["passed"]
+    assert run["verified_by_parent_count"] == 1146
+    assert run["case_count"] == 1147
+    assert run["check_count"] == run["success_count"] == 1
+    child = run["operations"][0]["cases"][1]
+    assert child["checks"] == []
+    assert child["parent_case_id"] == "parent"
+    assert child["verification"] == {"parent_case_id": "parent", "check": "ignored_auth", "status": "success"}
 
 
 @pytest.mark.parametrize("problem", [None, "missing_checks", "missing_response", "invalid_status", "failure", "reported_failure", "error"])

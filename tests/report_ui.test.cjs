@@ -55,6 +55,15 @@ vm.runInNewContext(fs.readFileSync(process.argv[3], 'utf8'), context);
 const get = id => elements.get(id);
 
 assert.equal(context.outcome([{ checks: [], response_status: 200 }]), 'neutral');
+const authChild = { case_id: 'auth-child', checks: [], response_status: 401,
+  verification: { parent_case_id: 'parent', check: 'ignored_auth', status: 'success' } };
+assert.equal(context.outcome([authChild]), 'pass');
+assert.equal(context.outcome([{ ...authChild, response_status: null }]), 'neutral');
+const authDetails = context.renderCase(authChild);
+authDetails.open = true;
+assert(authDetails.textContent.includes('Verified by ignored_auth on parent case parent.'));
+assert(!authDetails.textContent.includes('No check results recorded.'));
+assert.equal(context.outcome([authChild, { checks: [], response_status: 401 }]), 'neutral');
 assert.equal(context.outcome([{ checks: [{ status: 'success' }], response_status: null }]), 'neutral');
 assert.equal(context.outcome([{ checks: [{ status: 'failure', exception: { reason: 'accepted' } }], response_status: 200 }]), 'accepted');
 
