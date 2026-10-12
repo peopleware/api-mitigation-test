@@ -39,7 +39,7 @@ jobs:
       - uses: docker/metadata-action@v6
         id: meta
         with:
-          images: daviddkppw/api-mitigation-test
+          images: ppwcode/api-mitigation-test
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}
@@ -54,7 +54,7 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: daviddkppw/api-mitigation-test
+          repository: ppwcode/api-mitigation-test
           readme-filepath: ./README.md
           enable-url-completion: true
 

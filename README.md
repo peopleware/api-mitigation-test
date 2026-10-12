@@ -8,10 +8,10 @@
   <a href="https://github.com/peopleware/api-mitigation-test" target="_blank">
     <img alt="Version" src="https://img.shields.io/badge/github-repo-blue?logo=github" />
   </a>
-  <a href="https://hub.docker.com/r/daviddkppw/api-mitigation-test" target="_blank">
-    <img src="https://img.shields.io/docker/pulls/daviddkppw/api-mitigation-test?logo=docker" />
+  <a href="https://hub.docker.com/r/ppwcode/api-mitigation-test" target="_blank">
+    <img src="https://img.shields.io/docker/pulls/ppwcode/api-mitigation-test?logo=docker" />
   </a>
-  <img alt="Version" src="https://img.shields.io/docker/v/daviddkppw/api-mitigation-test?color=yellow" />
+  <img alt="Version" src="https://img.shields.io/docker/v/ppwcode/api-mitigation-test?color=yellow" />
   <a href="https://github.com/peopleware/api-mitigation-test?tab=Apache-2.0-1-ov-file" target="_blank">
     <img alt="License: Apache--2.0" src="https://img.shields.io/github/license/peopleware/api-mitigation-test" />
   </a>
