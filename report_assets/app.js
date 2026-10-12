@@ -228,13 +228,16 @@ function renderPhases(op) {
     .sort((a, b) => (PHASES.includes(a) ? PHASES.indexOf(a) : 99) - (PHASES.includes(b) ? PHASES.indexOf(b) : 99) || a.localeCompare(b));
   for (const phase of phases) {
     const scenarios = op.scenarios.filter(x => (x.phase || 'Unknown') === phase), cases = op.cases.filter(x => (x.phase || 'Unknown') === phase);
+    const kind = outcome(cases, cases.length > 0, scenarios);
+    if (state.filter !== 'all' && kind !== state.filter) continue;
+    const visibleCases = cases.filter(item => state.filter === 'all' || outcome([item]) === state.filter);
     const summary = node('summary'), counts = metrics(cases);
     const skipped = !cases.length && scenarios.length && scenarios.every(item => item.status === 'skip');
-    summary.append(node('span', 'phase-name', phase), node('span', 'muted', counts.cases + ' cases · ' + counts.checks + ' checks'), skipped ? pill('Skipped') : statusPill(outcome(cases, cases.length > 0, scenarios)));
+    summary.append(node('span', 'phase-name', phase), node('span', 'muted', counts.cases + ' cases · ' + counts.checks + ' checks'), skipped ? pill('Skipped') : statusPill(kind));
     body.append(lazyDetails('phase', summary, () => {
       const content = node('div', 'phase-body');
       for (const scenario of scenarios.filter(x => x.status === 'skip')) content.append(node('p', 'notice', 'Skipped: ' + (scenario.skip_reason || 'No reason recorded')));
-      for (const item of cases) content.append(renderCase(item));
+      for (const item of visibleCases) content.append(renderCase(item));
       if (!cases.length) content.append(node('p', 'empty', 'No observed cases in this phase.'));
       return content;
     }));

@@ -197,3 +197,59 @@ assert(singleRunChart.querySelectorAll('.trend-tooltip')[0].textContent.includes
 get('trend-content').querySelectorAll('button')[0].onclick();
 assert.equal(get('report').hidden, false);
 assert.equal(get('selected-run').textContent, 'newer');
+
+// Status filters apply at every level, including mixed cases within a phase.
+const statusCase = (case_id, phase, status, exception) => ({
+  case_id, phase, response_status: 200, checks: [{ name: 'check', status, exception }],
+});
+const mixedCases = [
+  statusCase('failed', 'fuzzing', 'failure'),
+  statusCase('passed-with-failure', 'fuzzing', 'success'),
+  statusCase('accepted-with-failure', 'fuzzing', 'failure', { reason: 'allowed' }),
+  { ...unexecuted, case_id: 'unexecuted-with-failure', phase: 'fuzzing' },
+  statusCase('accepted', 'coverage', 'failure', { reason: 'allowed' }),
+  statusCase('passed-with-accepted', 'coverage', 'success'),
+  statusCase('passed', 'stateful', 'success'),
+  { ...unexecuted, phase: 'Unknown' },
+];
+const filterOperation = (path, cases) => ({
+  entity: 'Filters', method: 'GET', path, expected: true,
+  tested: cases.some(item => !context.notExecuted(item)), cases,
+  scenarios: [{ phase: 'examples', status: 'skip', skip_reason: 'no examples' }],
+});
+context.filterOperations = [
+  filterOperation('/failed', mixedCases),
+  filterOperation('/accepted', mixedCases.filter(item => item.phase !== 'fuzzing')),
+  filterOperation('/untested', [{ ...unexecuted, phase: 'coverage' }]),
+  filterOperation('/passed', [statusCase('passed', 'stateful', 'success')]),
+];
+vm.runInNewContext('DATA.runs[0].operations = filterOperations; selectRun(0);', context);
+const selectFilter = label => get('operation-filters').children.find(button => button.textContent.startsWith(label)).onclick();
+const expandEvidence = () => {
+  for (const op of get('operations').querySelectorAll('.operation')) op.open = true;
+  for (const phase of get('operations').querySelectorAll('.phase')) phase.open = true;
+};
+const visibleCaseIds = () => get('operations').querySelectorAll('.case-id').map(item => item.textContent);
+selectFilter('Failed');
+assert.equal(get('operations').querySelectorAll('.operation').length, 1);
+expandEvidence();
+assert.equal(get('operations').querySelectorAll('.phase').length, 1);
+assert(get('operations').querySelectorAll('.phase-name')[0].textContent === 'fuzzing');
+assert.deepEqual(visibleCaseIds(), ['Case failed']);
+selectFilter('Accepted');
+assert.equal(get('operations').querySelectorAll('.operation').length, 1);
+expandEvidence();
+assert.equal(get('operations').querySelectorAll('.phase').length, 1);
+assert(get('operations').querySelectorAll('.phase-name')[0].textContent === 'coverage');
+assert.deepEqual(visibleCaseIds(), ['Case accepted']);
+selectFilter('Not tested');
+assert.equal(get('operations').querySelectorAll('.operation').length, 1);
+expandEvidence();
+assert.equal(get('operations').querySelectorAll('.phase').length, 2);
+assert.deepEqual(visibleCaseIds(), ['Case generated']);
+assert(get('operations').textContent.includes('Not executed'));
+selectFilter('All');
+assert.equal(get('operations').querySelectorAll('.operation').length, 4);
+expandEvidence();
+assert.equal(get('operations').querySelectorAll('.case').length, 14);
+assert(get('operations').textContent.includes('Skipped'));
