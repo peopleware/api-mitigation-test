@@ -14,6 +14,20 @@ python -m pip check
 python -m pytest -q tests
 ```
 
+With Node.js and npm installed, `package.json` also provides command shortcuts. Activate the Python virtual environment first so the shortcuts use its interpreter. No `npm install` is needed; the `version` field in `package.json` is the source of truth for the release version. Run `npm run` to list the shortcuts:
+
+```sh
+npm test
+npm run test:version
+npm run deps:check
+npm run image:build
+npm run version:bump -- patch
+# Forward additional arguments to a command:
+npm test -- -k version
+```
+
+The version shortcut creates a release commit and tag and requires a clean working tree, just like calling the Python script directly.
+
 Tests use a disposable HTTP API. Wrapper tests require `sh` or `bash`; report interaction tests use Node.js when available. Container checks require a running Docker daemon. Use the same project-owned Docker Compose strategy for a local API sandbox. See [local environments and container testing](docs/local-testing.md) for the image build, sandbox setup, and smoke-test workflow.
 
 Keep credentials, live API payloads, and generated artifacts out of commits. Run generated requests only against an isolated target with disposable data.

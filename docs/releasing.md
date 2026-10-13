@@ -1,6 +1,8 @@
 # Release procedure
 
-Use `python scripts/version.py <newversion|major|minor|patch|premajor|preminor|prepatch|prerelease>` to update the Docker version in `pipe.yml`, version references in the README and wrapper contract, then create a version commit and `v<version>` Git tag. The script reads the current version from `pipe.yml` and requires a clean working tree. Treat config, output, or verdict changes that require consumers to change their setup as breaking changes. Before running it:
+With npm available and the Python virtual environment activated, `npm run version:bump -- patch` is a shortcut for `python scripts/version.py patch`. It accepts the same version arguments.
+
+The `version` field in the root `package.json` is the source of truth for the current release version. Use `python scripts/version.py <newversion|major|minor|patch|premajor|preminor|prepatch|prerelease>` to update that field and every explicit semantic-version reference to `ppwcode/api-mitigation-test` in Git-tracked UTF-8 text files, then create a version commit and `v<version>` Git tag. This includes references with older pinned versions, including the image in `pipe.yml`. Placeholders, major-only tags, and tags such as `local` are left unchanged. The script requires a clean working tree and stages `package.json` plus only files whose image references changed. GitHub Action major-tag references must be updated separately when changing major versions. Treat config, output, or verdict changes that require consumers to change their setup as breaking changes. Before running it:
 
 1. Run the Python suite and a Docker smoke test. Review the reports and SQLite evidence for consistency and token redaction.
 2. Run the version script on the intended release commit. It creates the exact version tag locally; push the commit and tag to trigger `.github/workflows/release.yml`, which builds and pushes `daviddkppw/api-mitigation-test:<major>.<minor>.<patch>` and its Docker major tag.

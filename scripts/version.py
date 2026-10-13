@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -10,10 +11,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PIPE_FILE = ROOT / "pipe.yml"
-README_FILE = ROOT / "README.md"
-CONTRIBUTING_FILE = ROOT / "CONTRIBUTING.md"
-CONTRACT_TEST_FILE = ROOT / "tests" / "test_runner.py"
+PACKAGE_FILE = ROOT / "package.json"
+IMAGE = "ppwcode/api-mitigation-test"
+IMAGE_REFERENCE = re.compile(
+    rf"(?<![\w./-])(?P<prefix>docker://)?{re.escape(IMAGE)}:"
+    r"(?P<version>[0-9A-Za-z_.+-]+)"
+)
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -88,6 +91,39 @@ def bump(current: str, requested: str) -> str:
     return render((major, minor, patch, prerelease, None))
 
 
+def update_image_references(contents: str, new_version: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        try:
+            parse_version(match.group("version"))
+        except ValueError:
+            return match.group(0)
+        return f"{match.group('prefix') or ''}{IMAGE}:{new_version}"
+
+    return IMAGE_REFERENCE.sub(replace, contents)
+
+
+def update_tracked_files(new_version: str) -> list[str]:
+    changed = []
+    for filename in git("ls-files", "-z", capture=True).split("\0"):
+        if not filename:
+            continue
+        path = ROOT / filename
+        if path.is_symlink() or not path.is_file():
+            continue
+        original = path.read_bytes()
+        if b"\0" in original:
+            continue
+        try:
+            contents = original.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        updated = update_image_references(contents, new_version)
+        if updated != contents:
+            path.write_bytes(updated.encode("utf-8"))
+            changed.append(filename)
+    return changed
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(f"Usage: python {Path(__file__).as_posix()} <newversion|major|minor|patch|premajor|preminor|prepatch|prerelease>", file=sys.stderr)
@@ -97,17 +133,17 @@ def main() -> int:
         print("Refusing to release with a dirty working tree.", file=sys.stderr)
         return 2
 
-    pipe_text = PIPE_FILE.read_text(encoding="utf-8")
-    image_match = re.search(r"(?m)^image:\s+\S+:(\S+)\s*$", pipe_text)
-    if not image_match:
-        print("Could not read the current version from pipe.yml.", file=sys.stderr)
-        return 2
-
     try:
-        old_version = render(parse_version(image_match.group(1)))
+        package = json.loads(PACKAGE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(package, dict) or not isinstance(package.get("version"), str):
+            raise ValueError("package.json must contain a string version field")
+        old_version = render(parse_version(package["version"]))
         new_version = bump(old_version, sys.argv[1])
         if parse_version(new_version)[4] is not None:
             raise ValueError("Docker image versions cannot include build metadata (+...)")
+    except OSError as error:
+        print(f"Could not read the current version from package.json: {error}", file=sys.stderr)
+        return 2
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2
@@ -121,28 +157,15 @@ def main() -> int:
         print(f"Tag {new_tag} already exists.", file=sys.stderr)
         return 2
 
-    old_major = parse_version(old_version)[0]
-    new_major = parse_version(new_version)[0]
-    replacements = {
-        PIPE_FILE: (old_version, new_version),
-        README_FILE: (old_version, new_version),
-        CONTRACT_TEST_FILE: (f"api-mitigation-test:{old_version}", f"api-mitigation-test:{new_version}"),
-    }
-    for path, (old, new) in replacements.items():
-        contents = path.read_text(encoding="utf-8")
-        updated = contents.replace(old, new)
-        path.write_text(updated, encoding="utf-8", newline="\n")
-
-    for path in (README_FILE, CONTRIBUTING_FILE):
-        contents = path.read_text(encoding="utf-8")
-        updated = re.sub(
-            rf"(?<![\w.])v{old_major}(?![\w.])",
-            f"v{new_major}",
-            contents,
-        )
-        path.write_text(updated, encoding="utf-8", newline="\n")
-
-    git("add", "pipe.yml", "README.md", "CONTRIBUTING.md", "tests/test_runner.py")
+    changed = update_tracked_files(new_version)
+    # Reload to preserve any image references updated inside package.json itself.
+    package = json.loads(PACKAGE_FILE.read_text(encoding="utf-8"))
+    package["version"] = new_version
+    PACKAGE_FILE.write_text(
+        json.dumps(package, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+    git("add", "--", "package.json", *changed)
     git("commit", "-m", f"Release {new_version}")
     git("tag", "-a", new_tag, "-m", f"Release {new_version}")
     print(f"Created release commit and tag {new_tag}.")

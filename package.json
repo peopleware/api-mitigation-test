@@ -1,0 +1,12 @@
+{
+  "name": "api-mitigation-test",
+  "version": "0.2.2",
+  "private": true,
+  "scripts": {
+    "test": "python -m pytest -q tests",
+    "test:version": "python -m pytest -q tests/test_version.py",
+    "deps:check": "python -m pip check",
+    "image:build": "docker build -t ppwcode/api-mitigation-test:local .",
+    "version:bump": "python scripts/version.py"
+  }
+}
