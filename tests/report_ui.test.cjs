@@ -57,7 +57,22 @@ const document = {
   createElementNS: (_, tag) => new Element(tag),
   addEventListener() {},
 };
-const context = { document, matchMedia: () => ({ matches: false, addEventListener() {} }) };
+class ChartAdapter {
+  static instances = [];
+  constructor(canvas, config) {
+    this.canvas = canvas; this.config = config; this.width = 320; this.active = [];
+    this.tooltip = { setActiveElements: (active, position) => {
+      this.tooltipActive = active; this.tooltipPosition = position;
+    } };
+    ChartAdapter.instances.push(this);
+  }
+  destroy() { this.destroyed = true; this.canvas = null; }
+  getDatasetMeta() { return { data: this.config.data.datasets[0].data.map((_, i) => ({ x: i * 20, y: 40 })) }; }
+  isDatasetVisible() { return true; }
+  setActiveElements(active) { this.active = active; }
+  update() {}
+}
+const context = { document, Chart: ChartAdapter, matchMedia: () => ({ matches: false, addEventListener() {} }) };
 vm.runInNewContext(fs.readFileSync(process.argv[3], 'utf8'), context);
 const get = id => elements.get(id);
 
@@ -164,63 +179,122 @@ assert.equal(get('selected-run').textContent, 'older');
 get('tab-trends').onclick();
 assert.equal(get('report').hidden, true);
 assert.equal(get('trends').hidden, false);
-assert.equal(get('trend-content').querySelectorAll('svg').length, 2);
-// The SVG is scaled and offset, as it is in responsive panels with letterboxing.
-const matrix = { a: .5, d: .5, e: 120, f: 40, inverse() { return { a: 2, d: 2, e: -240, f: -80 }; } };
-function exerciseHover(container, expectedMetric) {
-  const svg = container.querySelectorAll('svg')[0];
-  const tooltip = container.querySelectorAll('.trend-tooltip')[0];
-  const guide = svg.querySelectorAll('.trend-guide')[0];
-  const dots = svg.querySelectorAll('circle');
-  svg.getScreenCTM = () => matrix;
-  svg.createSVGPoint = () => ({ x: 0, y: 0, matrixTransform(m) { return { x: this.x * m.a + m.e, y: this.y * m.d + m.f }; } });
-  container.getBoundingClientRect = () => ({ left: 100, width: 320 });
-  tooltip.offsetWidth = 220;
-  const move = x => svg.events.pointermove[0]({ clientX: x * .5 + 120, clientY: 100 });
-  assert.equal(tooltip.hidden, true);
-  svg.events.pointerenter[0]({ clientX: 140, clientY: 100 });
-  assert.equal(tooltip.hidden, false);
-  assert(tooltip.textContent.includes('older'));
-  assert(tooltip.textContent.includes('PASS'));
-  assert(tooltip.textContent.includes('0 failures · 0 accepted · 1 cases'));
-  assert(!tooltip.textContent.includes('Target:'));
-  assert(tooltip.textContent.includes(expectedMetric));
-  assert.equal(guide.attributes.x1, dots[0].attributes.cx);
-  assert.equal(guide.attributes.x2, dots[0].attributes.cx);
-  assert.equal(dots[0].attributes.r, '6');
-  move(280);
-  assert(tooltip.textContent.includes('older'));
-  move(284);
-  assert(tooltip.textContent.includes('newer'));
-  assert(tooltip.textContent.includes('FAIL'));
-  assert.equal(guide.attributes.x1, dots[1].attributes.cx);
-  assert.equal(dots[0].attributes.r, '4');
-  assert.equal(dots[1].attributes.r, '6');
-  assert.equal(tooltip.style.left, '100px'); // Keep the compact card within the panel.
-  move(600);
-  assert(tooltip.textContent.includes('newer'));
-  move(-20);
-  assert(tooltip.textContent.includes('older'));
-  svg.events.pointerleave[0]();
-  assert.equal(guide.attributes.visibility, 'hidden');
-  assert.equal(tooltip.hidden, true);
-  assert.equal(dots[0].attributes.r, '4');
-  move(525);
-  svg.events.pointercancel[0]();
-  assert.equal(tooltip.hidden, true);
-}
+assert.equal(get('trend-content').querySelectorAll('canvas').length, 2);
+assert.equal(get('trend-content').querySelectorAll('.history-table').length, 1);
+const historyTable = get('trend-content').querySelectorAll('.history-table')[0];
+assert.deepEqual(historyTable.querySelectorAll('th').map(cell => cell.textContent),
+  ['Run / date', 'Result', 'Operations', 'Unexplained failures', 'Cases']);
+assert.deepEqual(historyTable.querySelectorAll('.history-operations').map(cell => cell.textContent), ['▼ 0/1', '1/1']);
+assert.equal(historyTable.querySelectorAll('.history-operations')[0].children[0].className, 'operation-change down');
+assert.equal(historyTable.querySelectorAll('.operation-change')[0].className, 'operation-change down');
+assert(historyTable.querySelectorAll('.history-operations')[0].attributes['aria-label'].includes('decreased by 100 percentage points'));
+const ratio = (passed, observed) => ({ passed, observed });
+assert.equal(context.passedChange(ratio(2, 6), ratio(1, 6)).symbol, '▲');
+assert.equal(context.passedChange(ratio(2, 10), ratio(1, 2)).kind, 'down');
+assert.equal(context.passedChange(ratio(1, 2), ratio(1, 4)).kind, 'up');
+assert.equal(context.passedChange(ratio(1, 3), ratio(2, 6)).symbol, '—');
+assert.equal(context.passedChange(ratio(2, 12), ratio(1, 6)).kind, 'unchanged');
+assert.equal(context.passedChange(ratio(2, 6), null).symbol, '');
+assert.equal(context.passedChange(ratio(0, 0), ratio(1, 6)).symbol, '');
+assert.equal(context.passedChange(ratio(1, 6), ratio(0, 0)).symbol, '');
+assert.equal(get('trend-content').querySelectorAll('.selected-history').length, 1);
+assert(get('trend-content').textContent.includes('vs previous'));
+// Check our Chart.js configuration and rich tooltip; the real canvas
+// renderer and responsive sizing are exercised in a browser.
 const charts = get('trend-content').querySelectorAll('.trend-chart-container');
-exerciseHover(charts[0], 'Unexplained failed checks: 0');
-exerciseHover(charts[1], 'Observed cases: 1');
-const singleRunChart = context.chart([JSON.parse(elements.get('report-data').textContent).runs[0]], [1], '#94bfff', 'Observed cases');
-const singleSvg = singleRunChart.querySelectorAll('svg')[0];
-singleSvg.getScreenCTM = () => matrix;
-singleSvg.createSVGPoint = () => ({ x: 0, y: 0, matrixTransform(m) { return { x: this.x * m.a + m.e, y: this.y * m.d + m.f }; } });
-singleRunChart.getBoundingClientRect = () => ({ left: 100, width: 320 });
-singleRunChart.querySelectorAll('.trend-tooltip')[0].offsetWidth = 280;
-singleSvg.events.pointermove[0]({ clientX: 140, clientY: 100 });
-assert.equal(singleSvg.querySelectorAll('.trend-guide')[0].attributes.x1, '283');
-assert(singleRunChart.querySelectorAll('.trend-tooltip')[0].textContent.includes('newer'));
+const instances = ChartAdapter.instances.slice(-2);
+assert.equal(instances[0].config.data.datasets.length, 3);
+assert.equal(instances[0].config.options.plugins.legend.display, true);
+assert.equal(instances[1].config.data.datasets.length, 3);
+const failureData = JSON.parse(elements.get('report-data').textContent).runs.slice().reverse();
+assert.deepEqual(Array.from(instances[0].config.data.datasets[0].data), failureData.map(run => run.failure_count - run.accepted_count));
+assert.deepEqual(Array.from(instances[0].config.data.datasets[1].data), failureData.map(run => run.accepted_count));
+assert.equal(instances[0].config.data.datasets[0].label, 'Unexplained failures');
+assert.equal(instances[0].config.data.datasets[1].label, 'Accepted failures');
+assert.equal(instances[0].config.data.datasets[0].borderColor, '#ff9299');
+assert.equal(instances[0].config.data.datasets[1].borderColor, '#efc06c');
+assert.equal(instances[0].config.data.datasets[2].label, 'Total failed checks');
+assert.deepEqual(Array.from(instances[0].config.data.datasets[2].data), failureData.map(run => run.failure_count));
+assert(instances[0].config.data.datasets.every(dataset => dataset.borderDash.length === 0));
+assert.equal(instances[1].config.data.datasets[0].label, 'Passed or accepted operations');
+assert.equal(instances[1].config.data.datasets[1].label, 'Failed operations');
+assert.equal(instances[1].config.data.datasets[2].label, 'Observed operations');
+assert.deepEqual(Array.from(instances[1].config.data.datasets[0].data), [1, 0]);
+assert.deepEqual(Array.from(instances[1].config.data.datasets[1].data), [0, 1]);
+assert.deepEqual(Array.from(instances[1].config.data.datasets[2].data), [1, 1]);
+assert.equal(instances[1].config.data.datasets[1].borderColor, '#ff9299');
+const countedOperation = (checks, response_status = 200, tested = true, scenarios = []) => ({
+  tested, scenarios, cases: [{ checks, response_status }],
+});
+const counts = context.operationCounts({ operations: [
+  countedOperation([{ status: 'success' }]),
+  countedOperation([{ status: 'failure', exception: { reason: 'accepted' } }]),
+  countedOperation([{ status: 'failure' }]),
+  countedOperation([{ status: 'success' }], null),
+  countedOperation([{ status: 'failure', exception: { reason: 'accepted' } }], null),
+  countedOperation([], 200),
+  countedOperation([], null, false),
+  countedOperation([{ status: 'unknown' }]),
+] });
+assert.equal(counts.observed, 7);
+assert.equal(counts.passed, 2);
+assert.equal(counts.failed, 1);
+instances.forEach((instance, i) => {
+  assert.equal(instance.config.type, 'line');
+  const dataset = instance.config.data.datasets[0];
+  assert.equal(dataset.tension, 0.4);
+  assert.equal(dataset.cubicInterpolationMode, 'default');
+  assert.equal(instance.config.options.interaction.intersect, false);
+  assert.equal(instance.config.options.maintainAspectRatio, false);
+  const tooltip = charts[i].querySelectorAll('.trend-tooltip')[0];
+  tooltip.offsetWidth = 220; tooltip.offsetHeight = 120;
+  instance.height = 180;
+  const external = instance.config.options.plugins.tooltip.external;
+  external({ chart: instance, tooltip: { opacity: 1, dataPoints: [{ dataIndex: 0 }], caretX: 100, caretY: 90 } });
+  assert(tooltip.textContent.includes('older'));
+  assert(tooltip.querySelectorAll('.pill')[0].textContent === 'PASS');
+  assert.equal(tooltip.querySelectorAll('.trend-tooltip-series').length, 3);
+  assert(tooltip.querySelectorAll('.trend-tooltip-stats')[0].textContent.includes('1 operations · 0 failures · 0 accepted · 1 cases'));
+  assert(/^\d{1,2} [A-Z][a-z]+ 2026 - \d{2}:\d{2}:\d{2}$/.test(tooltip.querySelectorAll('.trend-tooltip-date')[0].textContent));
+  external({ chart: instance, tooltip: { opacity: 0 } });
+  assert.equal(tooltip.hidden, true);
+  assert.equal(instance.config.options.interaction.mode, 'index');
+  const guideCalls = [];
+  instance.config.plugins[0].afterDatasetsDraw({
+    getActiveElements: () => [{ element: { x: 100 } }], chartArea: { top: 10, bottom: 150 },
+    ctx: { save() {}, restore() {}, beginPath() {}, stroke() {},
+      setLineDash: dash => guideCalls.push(Array.from(dash)),
+      moveTo: (x, y) => guideCalls.push([x, y]), lineTo: (x, y) => guideCalls.push([x, y]) },
+  });
+  assert.deepEqual(guideCalls, [[4, 4], [100, 10], [100, 150]]);
+  const canvas = charts[i].querySelectorAll('canvas')[0];
+  canvas.events.keydown[0]({ key: 'End', preventDefault() {} });
+  assert.equal(instance.tooltipActive[0].index, 1);
+  assert.equal(instance.tooltipActive.length, 3);
+  canvas.events.keydown[0]({ key: 'ArrowLeft', preventDefault() {} });
+  assert.equal(instance.tooltipActive[0].index, 0);
+  canvas.events.keydown[0]({ key: 'Escape', preventDefault() {} });
+  assert.equal(instance.tooltipActive.length, 0);
+});
+get('trend-group').onchange();
+assert(instances.every(instance => instance.destroyed));
+// Removing a focused canvas can emit blur after Chart.js has been destroyed.
+charts[0].querySelectorAll('canvas')[0].events.blur[0]();
+assert.equal(ChartAdapter.instances.filter(instance => !instance.destroyed).length, 2);
+const singleRunChart = context.chart([JSON.parse(elements.get('report-data').textContent).runs[0]], [{ label: 'Observed cases', values: [1], color: '#94bfff' }], 'Observed cases');
+assert.equal(singleRunChart.querySelectorAll('canvas').length, 1);
+assert.equal(ChartAdapter.instances.at(-1).config.data.datasets[0].data.length, 1);
+const sameDayRuns = ['2026-10-12T10:00:00', '2026-10-13T10:00:00', '2026-10-13T14:00:00']
+  .map((started_at, i) => ({ started_at, build_number: 'dated-' + i }));
+context.chart(sameDayRuns, [{ label: 'Observed cases', values: [1, 2, 3], color: '#94bfff' }], 'Observed cases');
+assert.equal(context.tooltipDate('2026-10-13T15:48:17'), '13 Oct 2026 - 15:48:17');
+assert.equal(context.tooltipDate(null), 'Unknown timestamp');
+const datedChart = ChartAdapter.instances.at(-1).config;
+assert.equal(datedChart.data.datasets[0].data.length, 3);
+assert.deepEqual(Array.from(datedChart.data.labels), ['12 Oct 2026', '13 Oct 2026', '13 Oct 2026']);
+assert.equal(datedChart.options.scales.x.ticks.callback(0), '12 Oct 2026');
+assert.equal(datedChart.options.scales.x.ticks.callback(1), '13 Oct 2026');
+assert.equal(datedChart.options.scales.x.ticks.callback(2), null);
 get('trend-content').querySelectorAll('button')[0].onclick();
 assert.equal(get('report').hidden, false);
 assert.equal(get('selected-run').textContent, 'newer');

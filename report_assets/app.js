@@ -365,113 +365,212 @@ function trendGroups() {
   }
   return groups;
 }
-function svgNode(tag, attributes, text = '') {
-  const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
-  element.textContent = text;
-  return element;
+const trendCharts = new Set();
+function operationCounts(run) {
+  const observed = run.operations.filter(op => op.tested);
+  const statuses = observed.map(op => outcome(op.cases, op.tested, op.scenarios));
+  return { observed: observed.length,
+    passed: statuses.filter(status => ['pass', 'accepted'].includes(status)).length,
+    failed: statuses.filter(status => status === 'fail').length };
 }
-function chart(runs, values, color, label) {
+function tooltipDate(value) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return 'Unknown timestamp';
+  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) + ' - ' +
+    date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+}
+function passedChange(current, previous) {
+  if (previous == null) return { symbol: '', kind: '', description: 'No previous run' };
+  if (!current.observed || !previous.observed) return { symbol: '', kind: '', description: 'Ratio comparison unavailable: no observed operations' };
+  const delta = current.passed * previous.observed - previous.passed * current.observed;
+  if (!delta) return { symbol: '—', kind: 'unchanged', description: 'Passed ratio unchanged from previous run' };
+  const points = Math.abs(delta) * 100 / (current.observed * previous.observed);
+  const difference = points < 0.01 ? 'less than 0.01' : points.toLocaleString('en-GB', { maximumFractionDigits: 2 });
+  return { symbol: delta > 0 ? '▲' : '▼', kind: delta > 0 ? 'up' : 'down',
+    description: 'Passed or accepted ratio ' + (delta > 0 ? 'increased' : 'decreased') + ' by ' + difference + ' percentage points vs previous run' };
+}
+function chart(runs, series, label) {
+  const dates = runs.map(run => {
+    const date = new Date(run.started_at);
+    return !run.started_at || Number.isNaN(date.getTime()) ? 'Unknown date' :
+      date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  });
+  const seenDates = new Set(), dateTicks = new Set();
+  dates.forEach((date, index) => {
+    if (!seenDates.has(date)) dateTicks.add(index);
+    seenDates.add(date);
+  });
   const container = node('div', 'trend-chart-container');
+  const canvas = node('canvas', 'trend-chart');
+  canvas.setAttribute('role', 'img');
+  canvas.setAttribute('aria-label', label + ', oldest to newest: ' + runs.map((run, i) => run.build_number + ': ' + series.map(item => item.label + ' ' + item.values[i]).join(', ')).join(', '));
+  canvas.tabIndex = 0;
   const tooltip = node('div', 'trend-tooltip');
   tooltip.hidden = true;
   tooltip.setAttribute('role', 'tooltip');
-  const svg = svgNode('svg', { viewBox: '0 0 560 200', class: 'trend-chart', role: 'img', 'aria-label': 'Oldest to newest values: ' + values.join(', ') });
-  const max = Math.max(1, ...values);
-  for (const value of [0, max]) {
-    const y = 160 - value / max * 125;
-    svg.append(svgNode('line', { x1: 38, y1: y, x2: 525, y2: y, stroke: '#414b58' }), svgNode('text', { x: 30, y: y + 4, fill: '#a1aab8', 'text-anchor': 'end', 'font-size': 11 }, String(value)));
-  }
-  const points = values.map((value, index) => [38 + (values.length === 1 ? 245 : index * 487 / (values.length - 1)), 160 - value / max * 125]);
-  svg.append(svgNode('polyline', { points: points.map(point => point.join(',')).join(' '), fill: 'none', stroke: color, 'stroke-width': 3 }));
-  const dots = points.map((point, index) => {
-    const dot = svgNode('circle', { cx: point[0], cy: point[1], r: 4, fill: color });
-    dot.append(svgNode('title', {}, runs[index].build_number + ': ' + values[index]));
-    svg.append(dot);
-    return dot;
-  });
-  svg.append(svgNode('text', { x: 38, y: 187, fill: '#a1aab8', 'font-size': 11 }, fmtDate(runs[0].started_at)),
-    svgNode('text', { x: 525, y: 187, fill: '#a1aab8', 'text-anchor': 'end', 'font-size': 11 }, fmtDate(runs.at(-1).started_at)));
-  const guide = svgNode('line', { class: 'trend-guide', x1: 0, x2: 0, y1: 25, y2: 160, visibility: 'hidden' });
-  svg.append(guide);
-  let activeIndex = -1;
-  const hide = () => {
-    guide.setAttribute('visibility', 'hidden');
-    tooltip.hidden = true;
-    if (activeIndex >= 0) dots[activeIndex].setAttribute('r', 4);
-    activeIndex = -1;
-  };
-  const hover = event => {
-    const matrix = svg.getScreenCTM();
-    if (!matrix) return;
-    const pointer = svg.createSVGPoint();
-    pointer.x = event.clientX;
-    pointer.y = event.clientY;
-    const x = pointer.matrixTransform(matrix.inverse()).x;
-    let index = 0;
-    points.forEach((point, candidate) => {
-      if (Math.abs(point[0] - x) < Math.abs(points[index][0] - x)) index = candidate;
-    });
-    if (activeIndex !== index) {
-      if (activeIndex >= 0) dots[activeIndex].setAttribute('r', 4);
-      activeIndex = index;
-      const run = runs[index];
-      const heading = node('div', 'trend-tooltip-heading');
-      heading.append(node('strong', '', run.build_number),
-        pill(run.passed ? 'PASS' : 'FAIL', run.passed ? 'pass' : 'fail'));
-      tooltip.replaceChildren(heading,
-        node('time', 'muted', fmtDate(run.started_at)),
-        node('div', '', label + ': ' + values[index]),
-        node('div', 'muted', (run.failure_count - run.accepted_count) + ' failures · ' + run.accepted_count + ' accepted · ' + run.case_count + ' cases'));
+  container.append(canvas, tooltip);
+  const externalTooltip = ({ chart: instance, tooltip: model }) => {
+    if (!model.opacity || !model.dataPoints?.length) { tooltip.hidden = true; return; }
+    const index = model.dataPoints[0].dataIndex, run = runs[index];
+    const heading = node('div', 'trend-tooltip-heading');
+    heading.append(node('strong', '', run.build_number), pill(run.passed ? 'PASS' : 'FAIL', run.passed ? 'pass' : 'fail'));
+    const timestamp = node('time', 'trend-tooltip-date', tooltipDate(run.started_at));
+    timestamp.dateTime = run.started_at || '';
+    tooltip.replaceChildren(heading, timestamp);
+    for (const item of series) {
+      const row = node('div', 'trend-tooltip-series'), marker = node('span', 'trend-tooltip-marker');
+      marker.style.backgroundColor = item.color;
+      marker.setAttribute('aria-hidden', 'true');
+      row.append(marker, node('span', '', item.label + ': ' + item.values[index]));
+      tooltip.append(row);
     }
-    const point = points[index];
-    guide.setAttribute('x1', point[0]);
-    guide.setAttribute('x2', point[0]);
-    guide.setAttribute('visibility', 'visible');
-    dots[index].setAttribute('r', 6);
+    tooltip.append(node('div', 'trend-tooltip-stats', operationCounts(run).observed + ' operations · ' +
+      (run.failure_count - run.accepted_count) + ' failures · ' + run.accepted_count + ' accepted · ' + run.case_count + ' cases'));
     tooltip.hidden = false;
-    pointer.x = point[0];
-    pointer.y = point[1];
-    const screenPoint = pointer.matrixTransform(matrix);
-    const bounds = container.getBoundingClientRect();
-    tooltip.style.left = Math.max(0, Math.min(screenPoint.x - bounds.left - tooltip.offsetWidth / 2, bounds.width - tooltip.offsetWidth)) + 'px';
+    let left = model.caretX + 10;
+    if (left + tooltip.offsetWidth > instance.width) left = model.caretX - tooltip.offsetWidth - 10;
+    tooltip.style.left = Math.max(0, Math.min(left, instance.width - tooltip.offsetWidth)) + 'px';
+    tooltip.style.top = Math.max(0, Math.min(model.caretY - tooltip.offsetHeight / 2, instance.height - tooltip.offsetHeight)) + 'px';
   };
-  svg.addEventListener('pointerenter', hover);
-  svg.addEventListener('pointermove', hover);
-  svg.addEventListener('pointerleave', hide);
-  svg.addEventListener('pointercancel', hide);
-  container.append(svg, tooltip);
+  const instance = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: series.map(item => ({ label: item.label, data: item.values,
+        borderColor: item.color, backgroundColor: item.color, borderDash: item.dash || [],
+        borderWidth: 3, pointRadius: 2, pointBorderWidth: 1,
+        pointHoverRadius: 4, pointHoverBorderWidth: 1, fill: false,
+        tension: 0.4, cubicInterpolationMode: 'default' })),
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      onResize: () => { tooltip.hidden = true; },
+      interaction: { mode: 'index', intersect: false, axis: 'x' },
+      plugins: { legend: { display: series.length > 1, position: 'bottom',
+        labels: { color: '#a1aab8', usePointStyle: true, pointStyle: 'line', boxWidth: 24, padding: 12, font: { size: 11 } } },
+        tooltip: { enabled: false, external: externalTooltip } },
+      scales: {
+        x: { grid: { display: false }, border: { color: '#414b58' },
+          ticks: { color: '#a1aab8', maxRotation: 0, autoSkip: true, maxTicksLimit: 4, font: { size: 10 },
+            callback: value => dateTicks.has(value) ? dates[value] : null } },
+        y: { beginAtZero: true, border: { display: false }, grid: { color: '#414b58' },
+          ticks: { color: '#a1aab8', precision: 0, maxTicksLimit: 4, font: { size: 10 } } },
+      },
+    },
+    plugins: [{
+      id: 'runGuide',
+      afterDatasetsDraw(instance) {
+        const active = instance.getActiveElements()[0];
+        if (!active) return;
+        const { ctx, chartArea } = instance;
+        ctx.save(); ctx.strokeStyle = '#a1aab8'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(active.element.x, chartArea.top); ctx.lineTo(active.element.x, chartArea.bottom);
+        ctx.stroke(); ctx.restore();
+      },
+    }],
+  });
+  trendCharts.add(instance);
+  let focusedIndex = -1;
+  canvas.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === 'Escape') { hideTooltip(); return; }
+    focusedIndex = event.key === 'Home' ? 0 : event.key === 'End' ? runs.length - 1 :
+      Math.max(0, Math.min(runs.length - 1, focusedIndex + (event.key === 'ArrowLeft' ? -1 : 1)));
+    const active = series.map((_, datasetIndex) => ({ datasetIndex, index: focusedIndex }))
+      .filter(item => instance.isDatasetVisible(item.datasetIndex));
+    if (!active.length) { hideTooltip(); return; }
+    const point = instance.getDatasetMeta(active[0].datasetIndex).data[focusedIndex];
+    instance.setActiveElements(active);
+    instance.tooltip.setActiveElements(active, { x: point.x, y: point.y });
+    instance.update('none');
+  });
+  function hideTooltip() {
+    if (!instance.canvas) return;
+    instance.setActiveElements([]);
+    instance.tooltip.setActiveElements([], { x: 0, y: 0 });
+    instance.update('none');
+    tooltip.hidden = true;
+  }
+  canvas.addEventListener('blur', hideTooltip);
   return container;
 }
 function renderTrends() {
   const groups = trendGroups(), select = $('trend-group'), previous = select.value;
   clear(select);
-  for (const key of groups.keys()) { const option = node('option', '', key); option.value = key; select.append(option); }
+  for (const key of groups.keys()) { const option = node('option','',key); option.value = key; select.append(option); }
   const selected = DATA.runs[state.run];
   const selectedGroup = (selected.configuration_id || 'Unspecified') + ' · ' + (selected.base_url || 'Unspecified target');
   select.value = groups.has(previous) ? previous : selectedGroup;
   const runs = groups.get(select.value) || [], root = $('trend-content');
+  for (const instance of trendCharts) instance.destroy();
+  trendCharts.clear();
   clear(root);
-  if (!runs.length) return;
-  const grid = node('div', 'trend-grid');
-  for (const [title, values, color] of [['Unexplained failed checks', runs.map(x => x.failure_count - x.accepted_count), '#ff9299'], ['Observed cases', runs.map(x => x.case_count), '#94bfff']]) {
-    const panel = node('section', 'panel'), delta = values.length > 1 ? values.at(-1) - values.at(-2) : null;
-    panel.append(node('h2', '', title), node('p', 'muted', 'Latest: ' + values.at(-1) + (delta === null ? '' : ' · ' + (delta >= 0 ? '+' : '') + delta + ' from previous')), chart(runs, values, color, title));
-    grid.append(panel);
+  $('trend-description').textContent = runs.length + ' runs · oldest to newest charts · newest first history';
+  if (!runs.length) { root.append(node('p','empty','No recorded runs for this configuration.')); return; }
+  const latest = runs.at(-1), prior = runs.at(-2), strip = node('div','trend-summary');
+  const latestItem = node('div','trend-latest');
+  latestItem.append(node('span','stat-label','Latest run'), node('strong','',latest.build_number),pill(latest.passed ? 'Passed' : 'Failed',latest.passed ? 'pass':'fail'));
+  strip.append(latestItem);
+  const values = [['Unexplained failed checks',latest.failure_count-latest.accepted_count,prior ? (latest.failure_count-latest.accepted_count)-(prior.failure_count-prior.accepted_count):null,'fail'],['Observed cases',latest.case_count,prior ? latest.case_count-prior.case_count:null,''],['Accepted failures',latest.accepted_count,prior ? latest.accepted_count-prior.accepted_count:null,'accepted']];
+  for (const [label,value,delta,kind] of values) {
+    const item = node('div','trend-stat'); item.append(node('span','stat-label',label),node('strong',kind,value.toLocaleString()));
+    item.append(node('span','trend-delta',delta == null ? 'First recorded run' : (delta === 0 ? 'No change' : (delta>0?'+':'') + delta.toLocaleString()) + ' vs previous'));
+    strip.append(item);
+  }
+  root.append(strip);
+  const grid = node('div','trend-grid');
+  const operations = runs.map(operationCounts);
+  const charts = [
+    ['Failed checks', [
+      { label: 'Unexplained failures', values: runs.map(run => run.failure_count - run.accepted_count), color: '#ff9299' },
+      { label: 'Accepted failures', values: runs.map(run => run.accepted_count), color: '#efc06c' },
+      { label: 'Total failed checks', values: runs.map(run => run.failure_count), color: '#94bfff' },
+    ], 'Total, unexplained and accepted failures'],
+    ['Operations', [
+      { label: 'Passed or accepted operations', values: operations.map(counts => counts.passed), color: '#77d79a' },
+      { label: 'Failed operations', values: operations.map(counts => counts.failed), color: '#ff9299' },
+      { label: 'Observed operations', values: operations.map(counts => counts.observed), color: '#94bfff' },
+    ], 'Observed operations by result'],
+  ];
+  for (const [title, series, description] of charts) {
+    const panel = node('section','panel trend-panel');
+    const heading = node('div','trend-panel-heading'); heading.append(node('h3','',title),node('span','muted',description));
+    panel.append(heading,chart(runs,series,title)); grid.append(panel);
   }
   root.append(grid);
-  const history = node('section', 'panel');
-  history.append(node('h2', '', 'Run history'));
-  [...runs].reverse().forEach((run, index) => {
-    const row = node('div', 'trend-row'), button = node('button', '', run.build_number);
-    button.type = 'button';
+  const history = node('section','panel history-panel');
+  const heading = node('div','history-heading'); heading.append(node('h3','','Run history'),node('span','muted','Select a run to inspect its operations')); history.append(heading);
+  const table = node('table','history-table');
+  table.append(node('caption','sr-only','Run history for ' + select.value + ', newest first'));
+  const head = node('thead'), header = node('tr');
+  for (const label of ['Run / date','Result','Operations','Unexplained failures','Cases']) { const th = node('th','',label); th.scope = 'col'; header.append(th); }
+  head.append(header); table.append(head); const body = node('tbody');
+  [...runs].reverse().forEach((run,index) => {
+    const row = node('tr'); if(run === selected) row.className = 'selected-history';
+    const name = node('td'), button = node('button','history-run',run.build_number); button.type = 'button';
+    if(run === selected) button.setAttribute('aria-current','true');
     button.onclick = () => { selectRun(DATA.runs.indexOf(run)); showView('report'); };
-    row.append(button, node('time', 'muted', fmtDate(run.started_at)), pill(run.passed ? 'PASS' : 'FAIL', run.passed ? 'pass' : 'fail'), node('span', '', (run.failure_count - run.accepted_count) + ' unexplained failures · ' + run.case_count + ' cases'));
-    const older = runs[runs.length - 2 - index];
-    if (older && older.schema_sha256 !== run.schema_sha256) row.append(pill('Schema changed', 'warn'));
-    history.append(row);
+    name.append(button,node('time','history-date',fmtDate(run.started_at)));
+    const older = runs[runs.length-2-index];
+    if(older && older.schema_sha256 !== run.schema_sha256) name.append(pill('Schema changed','warn'));
+    const result = node('td'); result.append(pill(run.passed?'Passed':'Failed',run.passed?'pass':'fail'));
+    const counts = operationCounts(run);
+    const operations = node('td','numeric history-operations');
+    const change = passedChange(counts, older ? operationCounts(older) : null);
+    if (change.symbol) {
+      const indicator = node('span','operation-change ' + change.kind,change.symbol);
+      indicator.setAttribute('aria-hidden','true');
+      operations.append(indicator);
+    }
+    operations.append(node('span','history-operation-ratio',counts.passed + '/' + counts.observed));
+    operations.setAttribute('aria-label',counts.passed + ' passed or accepted of ' + counts.observed + ' observed operations. ' + change.description);
+    operations.title = 'Passed or accepted / observed operations · ' + change.description;
+    const failures = node('td','numeric' + (run.failure_count-run.accepted_count>0?' failure-number':''),(run.failure_count-run.accepted_count).toLocaleString());
+    const cases = node('td','numeric',run.case_count.toLocaleString());
+    row.append(name,result,operations,failures,cases); body.append(row);
   });
-  root.append(history);
+  table.append(body); history.append(table); root.append(history);
 }
 $('older-run').onclick = () => selectRun(state.run + 1);
 $('newer-run').onclick = () => selectRun(state.run - 1);
