@@ -161,8 +161,12 @@ def generate_report(input_dir: Path, output: Path) -> tuple[int, list[str]]:
     generated = datetime.now(timezone.utc).isoformat(timespec="seconds")
     html = (ASSETS / "report.html").read_text(encoding="utf-8")
     brand_mark = quote((ASSETS / "brand-mark.svg").read_text(encoding="utf-8"), safe="")
+    chartjs = ("/*\n" + (ASSETS / "vendor/chartjs-LICENSE.md").read_text(encoding="utf-8") + "\n" +
+               (ASSETS / "vendor/kurkle-color-LICENSE.md").read_text(encoding="utf-8") + "\n*/\n" +
+               (ASSETS / "vendor/chart.umd.min.js").read_text(encoding="utf-8"))
     html = (html.replace("__CSS__", (ASSETS / "style.css").read_text(encoding="utf-8"))
             .replace('src="brand-mark.svg"', f'src="data:image/svg+xml,{brand_mark}"')
+            .replace("__CHARTJS__", chartjs)
             .replace("__JS__", (ASSETS / "app.js").read_text(encoding="utf-8"))
             .replace("__GENERATED__", generated).replace("__RUN_COUNT__", str(len(runs)))
             .replace("__DATA__", payload))

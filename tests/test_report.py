@@ -163,6 +163,19 @@ def test_operation_entity_uses_schema_tag_with_legacy_path_fallback(tmp_path):
     assert entity_name({"path": "/api/v2/{id}"}) == "Other operations"
 
 
+def test_report_embeds_offline_chartjs(tmp_path):
+    make_database(tmp_path / "run", "offline", "2026-01-01T00:00:00+00:00")
+    output = tmp_path / "report.html"
+    generate_report(tmp_path, output)
+    html = output.read_text(encoding="utf-8")
+    assert "Chart.js v4.5.1" in html
+    assert "Permission is hereby granted" in html
+    assert "__CHARTJS__" not in html
+    assert not re.search(r"<script[^>]+src=", html)
+    assert "sourceMappingURL" not in html
+    assert html.index("Chart.js v4.5.1") < html.index("const DATA =")
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="UI interaction test requires Node.js")
 def test_report_run_navigation_and_nested_disclosures(tmp_path):
     make_database(tmp_path / "old", "older", "2026-01-01T00:00:00+00:00")
