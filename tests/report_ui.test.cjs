@@ -14,6 +14,13 @@ class Element {
     this._text = '';
     this._open = false;
     this.style = { setProperty() {} };
+    this.classList = { toggle: name => {
+      const classes = new Set(this.className.split(' ').filter(Boolean));
+      const added = !classes.has(name);
+      if (added) classes.add(name); else classes.delete(name);
+      this.className = [...classes].join(' ');
+      return added;
+    } };
   }
   get childNodes() { return this.children; }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(' '); }
@@ -50,7 +57,7 @@ const document = {
   createElementNS: (_, tag) => new Element(tag),
   addEventListener() {},
 };
-const context = { document };
+const context = { document, matchMedia: () => ({ matches: false, addEventListener() {} }) };
 vm.runInNewContext(fs.readFileSync(process.argv[3], 'utf8'), context);
 const get = id => elements.get(id);
 
@@ -104,6 +111,26 @@ assert.equal(item.open, false);
 item.open = true;
 assert(item.textContent.includes('status_code_conformance'));
 assert.equal(item.querySelectorAll('.exchange').length, 1);
+assert.equal(item.querySelectorAll('.http-details').length, 0);
+assert.equal(item.querySelectorAll('.exchange-panel').length, 2);
+assert(item.querySelectorAll('.exchange-headers').every(details => !details.open));
+assert(item.querySelectorAll('.passed-checks').every(details => !details.open));
+assert.equal(get('run-notices').querySelectorAll('.issues').length, 0);
+assert(get('run-stats').textContent.includes('Failures accepted by an exception'));
+get('run-stats').children[3].onclick();
+assert.equal(get('operation-filters').children.find(button => button.textContent.startsWith('Failed')).attributes['aria-pressed'], 'true');
+
+const truncated = context.renderExchange('Response', { status: 200,
+  body: { status: 'truncated', text: '{"partial":"' + 'x'.repeat(700) } });
+assert(truncated.textContent.includes('truncated'));
+const payload = truncated.querySelectorAll('.payload')[0];
+assert(payload.textContent.includes('partial'));
+assert.equal(payload.attributes['aria-label'], 'Response body, scrollable');
+const expandBody = truncated.querySelectorAll('.payload-expand')[0];
+expandBody.onclick();
+assert.equal(expandBody.attributes['aria-expanded'], 'true');
+expandBody.onclick();
+assert.equal(expandBody.attributes['aria-expanded'], 'false');
 
 get('collapse-all').onclick();
 assert(get('operations').querySelectorAll('details').every(details => !details.open));
@@ -253,3 +280,18 @@ assert.equal(get('operations').querySelectorAll('.operation').length, 4);
 expandEvidence();
 assert.equal(get('operations').querySelectorAll('.case').length, 14);
 assert(get('operations').textContent.includes('Skipped'));
+
+// Entity shortcuts narrow the list and reset when changing the run.
+get('entity-navigation').children.find(button => button.tagName === 'button' && button.textContent.startsWith('Filters')).onclick();
+assert.equal(get('operations').querySelectorAll('.entity').length, 1);
+get('older-run').onclick();
+assert(get('operations').textContent.includes('Items'));
+
+context.filterOperations = [filterOperation('/incomplete', [
+  { case_id: 'missing-checks', phase: 'coverage', response_status: 200, checks: [] },
+  statusCase('successful', 'coverage', 'success'),
+])];
+vm.runInNewContext('DATA.runs[0].operations = filterOperations; selectRun(0);', context);
+selectFilter('Incomplete');
+expandEvidence();
+assert.deepEqual(visibleCaseIds(), ['Case missing-checks']);

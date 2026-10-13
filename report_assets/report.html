@@ -8,6 +8,7 @@
   <style>__CSS__</style>
 </head>
 <body>
+  <a class="skip-link" href="#operation-search">Skip to operation search</a>
   <header class="hero">
     <div class="header-inner">
       <div class="brand">
@@ -40,7 +41,7 @@
       <button id="tab-trends" type="button">Trends</button>
     </nav>
     <section id="report" aria-label="Selected run report">
-      <div id="run-metadata" class="metadata"></div>
+      <details id="run-context" class="run-context" open><summary id="run-context-summary">Run details</summary><div id="run-metadata" class="metadata"></div></details>
       <div id="run-stats" class="stats"></div>
       <div id="run-notices"></div>
       <div class="toolbar">
@@ -53,7 +54,7 @@
         </div>
       </div>
       <p id="operation-result-count" class="result-count" aria-live="polite"></p>
-      <div id="operations"></div>
+      <div class="results-layout"><nav id="entity-navigation" class="entity-nav" aria-label="Filter by entity"></nav><div id="operations"></div></div>
       <details class="notes"><summary>Run provenance</summary><div id="run-provenance" class="metadata"></div></details>
     </section>
     <section id="trends" aria-label="Run trends" hidden>
