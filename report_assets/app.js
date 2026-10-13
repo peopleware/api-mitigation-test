@@ -10,8 +10,12 @@ const clear = element => element.replaceChildren();
 const pill = (label, kind = 'neutral') => node('span', 'pill ' + kind, label);
 const fmtDate = value => {
   if (!value) return 'Unknown timestamp';
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (dateOnly) return dateOnly[3] + '/' + dateOnly[2] + '/' + dateOnly[1];
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ', ' +
+    date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 };
 const state = { run: 0, filter: 'all', view: 'report', entity: '' };
 const PHASES = ['examples', 'coverage', 'fuzzing', 'stateful'];
@@ -273,7 +277,7 @@ function compactCheck(check) {
       message.append(node('summary','',check.failure_message.replace(/\s+/g,' ').slice(0,140) + '…'),node('pre','',check.failure_message)); text.append(message);
     }
   }
-  if(check.exception) text.append(node('div','exception',(check.exception.reason || 'No reason') + ' · Owner: ' + (check.exception.owner || 'unknown') + ' · Expires: ' + (check.exception.expiry || 'unknown')));
+  if(check.exception) text.append(node('div','exception',(check.exception.reason || 'No reason') + ' · Owner: ' + (check.exception.owner || 'unknown') + ' · Expires: ' + (check.exception.expiry ? fmtDate(check.exception.expiry) : 'unknown')));
   row.append(text); return row;
 }
 function copyControl(label,textValue) {
@@ -595,6 +599,7 @@ document.addEventListener('keydown', event => {
   }
 });
 for (const warning of DATA.warnings) $('warnings').append(node('p', 'notice', warning));
+$('generated-time').textContent = fmtDate($('generated-time').dateTime);
 const compactViewport = matchMedia('(max-width:767px)');
 const syncRunContext = () => { $('run-context').open = !compactViewport.matches; };
 compactViewport.addEventListener('change', syncRunContext);

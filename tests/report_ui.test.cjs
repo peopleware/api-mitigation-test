@@ -75,6 +75,9 @@ class ChartAdapter {
 const context = { document, Chart: ChartAdapter, matchMedia: () => ({ matches: false, addEventListener() {} }) };
 vm.runInNewContext(fs.readFileSync(process.argv[3], 'utf8'), context);
 const get = id => elements.get(id);
+assert.equal(vm.runInNewContext("fmtDate('2026-10-13T15:48:17')", context), '13/10/2026, 15:48:17');
+assert.equal(vm.runInNewContext("fmtDate('2026-10-13T00:00:00')", context), '13/10/2026, 00:00:00');
+assert.equal(vm.runInNewContext("fmtDate('2026-12-31')", context), '31/12/2026');
 
 assert.equal(context.outcome([{ checks: [], response_status: 200 }]), 'neutral');
 const unexecuted = { case_id: 'generated', checks: [], response_status: null, request: null, response: null };
