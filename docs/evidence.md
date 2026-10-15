@@ -52,6 +52,21 @@ The per-build SQLite database records build/component/config/schema identity and
 
 The console places `Cases` between `Operations` and `Checks`, showing generated, executed, and not-executed counts, parent-verified cases when present, and failed cases only when nonzero. The HTML Cases card shows generated cases with separate executed and not-executed counts. A case with one or more failed checks counts once, including checks accepted by an exception, matching the check failure totals. The verdict records this count in `cases.failed`.
 
+## Combined scenarios
+
+For one test invocation split into multiple scenarios (for example, an
+administrator run, admission failures and session logout), rebuild its single
+cohort directory with `report --input-dir <cohort> --combine-runs`. The report
+opens with all operations together, deduplicated by HTTP method and path. Case
+and check counts are summed; every case retains its source configuration and
+run. One failed scenario makes the combined result fail. Individual scenarios
+remain selectable for diagnosis and provenance. Their original verdicts and
+TraceCov files remain unchanged; coverage percentages are never averaged.
+
+Use this option only for scenarios belonging to the same test invocation, not a
+directory of historical runs. Different API targets or component versions and
+unreadable evidence are rejected rather than producing a partial combined view.
+
 ## Glossary
 
 Unsupported-method coverage probes are attributed to their originating schema

@@ -17,7 +17,33 @@ const fmtDate = value => {
   return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ', ' +
     date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 };
-const state = { run: 0, filter: 'all', view: 'report', entity: '' };
+function combineRuns(runs) {
+  const operations = new Map();
+  const combined = { ...runs[0], build_number: 'All scenarios', configuration_id: runs.length + ' scenarios combined',
+    coverage_href: null, combined: true, passed: runs.every(run => run.passed), issues: [], operations: [],
+    http_available: runs.every(run => run.http_available) };
+  const totals = ['case_count', 'check_count', 'generated_count', 'executed_count', 'unexecuted_count',
+    'unknown_execution_count', 'verified_by_parent_count', 'failure_count', 'accepted_count', 'success_count'];
+  for (const key of totals) combined[key] = runs.reduce((sum, run) => sum + (run[key] || 0), 0);
+  for (const run of runs) {
+    combined.issues.push(...run.issues.map(issue => run.configuration_id + ': ' + issue));
+    for (const op of run.operations) {
+      const key = op.method + ' ' + op.path;
+      if (!operations.has(key)) operations.set(key, { ...op, expected: false, tested: false, cases: [], scenarios: [] });
+      const target = operations.get(key);
+      target.expected ||= op.expected;
+      target.tested ||= op.tested;
+      const source = { build_number: run.build_number, configuration_id: run.configuration_id };
+      target.cases.push(...op.cases.map(item => ({ ...item, source })));
+      target.scenarios.push(...op.scenarios.map(item => ({ ...item, source })));
+    }
+  }
+  combined.operations = [...operations.values()];
+  return combined;
+}
+DATA.combined = DATA.combine_runs ? combineRuns(DATA.runs) : null;
+const state = { run: DATA.combined ? -1 : 0, filter: 'all', view: 'report', entity: '' };
+const currentRun = () => state.run === -1 ? DATA.combined : DATA.runs[state.run];
 const PHASES = ['examples', 'coverage', 'fuzzing', 'stateful'];
 const STATUS = {
   pass: { label: 'Passed', icon: '✓', edge: '#426e54' },
@@ -76,29 +102,31 @@ function selectRun(index) {
   renderHeader();
   renderRun();
   if (state.view === 'trends') {
-    const run = DATA.runs[state.run];
+    const run = DATA.runs[Math.max(0, state.run)];
     $('trend-group').value = (run.configuration_id || 'Unspecified') + ' · ' + (run.base_url || 'Unspecified target');
     renderTrends();
   }
 }
 function renderHeader() {
-  const run = DATA.runs[state.run];
+  const run = currentRun();
   $('selected-run').textContent = run.build_number;
   $('selected-time').textContent = fmtDate(run.started_at);
   $('selected-time').dateTime = run.started_at || '';
   $('selected-status').className = 'pill ' + (run.passed ? 'pass' : 'fail');
   $('selected-status').textContent = run.passed ? 'PASS' : 'FAIL';
   $('run-picker-summary').setAttribute('aria-label', 'Choose a run. Selected ' + run.build_number + ', ' + fmtDate(run.started_at) + ', ' + (run.passed ? 'PASS' : 'FAIL'));
-  $('run-count').textContent = 'Run ' + (state.run + 1) + ' of ' + DATA.runs.length + ' · newest first';
+  $('run-count').textContent = run.combined ? DATA.runs.length + ' scenarios · combined overview' : 'Run ' + (state.run + 1) + ' of ' + DATA.runs.length + ' · newest first';
   $('older-run').disabled = state.run === DATA.runs.length - 1;
-  $('newer-run').disabled = state.run === 0;
+  $('newer-run').disabled = state.run === (DATA.combined ? -1 : 0);
   renderRunOptions();
 }
 function renderRunOptions() {
   const root = $('run-options');
   clear(root);
   const query = $('run-search').value.toLowerCase();
-  DATA.runs.forEach((run, index) => {
+  const choices = DATA.runs.map((run, index) => ({ run, index }));
+  if (DATA.combined) choices.unshift({ run: DATA.combined, index: -1 });
+  choices.forEach(({ run, index }) => {
     if (![run.build_number, run.configuration_id, run.started_at, run.passed ? 'pass' : 'fail'].join(' ').toLowerCase().includes(query)) return;
     const button = node('button', 'run-option');
     button.type = 'button';
@@ -118,7 +146,7 @@ function metadata(label, value, extra = '') {
   return item;
 }
 function renderRun() {
-  const run = DATA.runs[state.run], meta = $('run-metadata');
+  const run = currentRun(), meta = $('run-metadata');
   clear(meta);
   meta.append(metadata('Configuration', run.configuration_id), metadata('Component version', run.component_version),
     metadata('Target', run.base_url, 'Schemathesis ' + (run.schemathesis_version || 'unknown') + ' · TraceCov ' + (run.tracecov_version || 'unknown')));
@@ -155,16 +183,20 @@ function renderRun() {
   const notes = $('run-notices');
   clear(notes);
   if (!run.http_available) notes.append(node('p', 'notice', 'This older run has no recorded HTTP exchanges.'));
+  for (const issue of run.issues) notes.append(node('p', 'notice', issue));
   notes.hidden = !notes.childNodes.length;
   $('run-context-summary').textContent = 'Run details · ' + (run.configuration_id || 'Unspecified configuration') + ' · v' + (run.component_version || 'unknown');
   const provenance = $('run-provenance');
   clear(provenance);
-  provenance.append(metadata('Schema', run.schema_location), metadata('Schema SHA-256', run.schema_sha256), metadata('Configuration SHA-256', run.config_sha256));
+  for (const source of run.combined ? DATA.runs : [run]) {
+    if (run.combined) provenance.append(metadata('Source scenario', source.configuration_id, source.build_number));
+    provenance.append(metadata('Schema', source.schema_location), metadata('Schema SHA-256', source.schema_sha256), metadata('Configuration SHA-256', source.config_sha256));
+  }
   renderFilters();
   renderOperations();
 }
 function renderFilters() {
-  const operations = DATA.runs[state.run].operations, root = $('operation-filters');
+  const operations = currentRun().operations, root = $('operation-filters');
   clear(root);
   for (const [value,label] of [['all','All'],['fail','Failed'],['neutral','Incomplete'],['accepted','Accepted'],['untested','Not tested']]) {
     const count = value === 'all' ? operations.length : operations.filter(op => outcome(op.cases,op.tested,op.scenarios) === value).length;
@@ -178,7 +210,7 @@ function renderFilters() {
 }
 function renderOperations() {
   const root = $('operations'); clear(root);
-  const run = DATA.runs[state.run], query = $('operation-search').value.trim().toLowerCase();
+  const run = currentRun(), query = $('operation-search').value.trim().toLowerCase();
   const matched = run.operations.filter(op => (state.filter === 'all' || outcome(op.cases,op.tested,op.scenarios) === state.filter) && [op.entity,op.method,op.path,op.summary].join(' ').toLowerCase().includes(query));
   const groups = new Map();
   for (const op of matched) { if (!groups.has(op.entity)) groups.set(op.entity,[]); groups.get(op.entity).push(op); }
@@ -255,7 +287,7 @@ function renderPhases(op) {
     summary.append(node('span', 'phase-name', phase), node('span', 'muted', counts.cases + ' cases · ' + counts.checks + ' checks'), skipped ? pill('Skipped') : statusPill(kind));
     body.append(lazyDetails('phase', summary, () => {
       const content = node('div', 'phase-body');
-      for (const scenario of scenarios.filter(x => x.status === 'skip')) content.append(node('p', 'notice', 'Skipped: ' + (scenario.skip_reason || 'No reason recorded')));
+      for (const scenario of scenarios.filter(x => x.status === 'skip')) content.append(node('p', 'notice', (scenario.source ? scenario.source.configuration_id + ' · ' : '') + 'Skipped: ' + (scenario.skip_reason || 'No reason recorded')));
       for (const item of visibleCases) content.append(renderCase(item));
       if (!cases.length) content.append(node('p', 'empty', 'No observed cases in this phase.'));
       return content;
@@ -331,8 +363,10 @@ function renderExchange(label,data) {
 function renderCase(item) {
   const summary = node('summary');
   summary.append(node('span','case-id','Case ' + (item.case_id || 'unknown')),node('span','muted','HTTP ' + (item.response_status ?? 'unknown') + ' · ' + item.checks.length + ' checks'),statusPill(notExecuted(item) ? 'not_executed' : outcome([item])));
+  if (item.source) summary.append(pill(item.source.configuration_id));
   return lazyDetails('case',summary,() => {
     const body = node('div','case-body compact-case');
+    if (item.source) body.append(node('p', 'notice', 'Source: ' + item.source.configuration_id + ' · ' + item.source.build_number));
     if(notExecuted(item)) body.append(node('p','notice','No HTTP interaction or check results recorded. This generated case is classified as not executed and earns no pass or coverage credit.'));
     else if(item.verification) body.append(node('p','notice','Verified by ' + item.verification.check + ' on parent case ' + item.verification.parent_case_id + '.'));
     else if(!item.checks.length) body.append(node('p','notice','No check results recorded.'));
@@ -503,7 +537,7 @@ function renderTrends() {
   const groups = trendGroups(), select = $('trend-group'), previous = select.value;
   clear(select);
   for (const key of groups.keys()) { const option = node('option','',key); option.value = key; select.append(option); }
-  const selected = DATA.runs[state.run];
+  const selected = DATA.runs[Math.max(0, state.run)];
   const selectedGroup = (selected.configuration_id || 'Unspecified') + ' · ' + (selected.base_url || 'Unspecified target');
   select.value = groups.has(previous) ? previous : selectedGroup;
   const runs = groups.get(select.value) || [], root = $('trend-content');

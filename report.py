@@ -140,7 +140,7 @@ def timestamp(value) -> float:
 ASSETS = Path(__file__).with_name("report_assets")
 
 
-def generate_report(input_dir: Path, output: Path) -> tuple[int, list[str]]:
+def generate_report(input_dir: Path, output: Path, *, combine_runs: bool = False) -> tuple[int, list[str]]:
     input_dir = Path(input_dir)
     output = Path(output)
     databases = sorted(input_dir.rglob("evidence.sqlite"))
@@ -155,8 +155,13 @@ def generate_report(input_dir: Path, output: Path) -> tuple[int, list[str]]:
             warnings.append(f"Skipped {database}: {exc}")
     if not runs:
         raise ValueError("No readable evidence databases found")
+    if combine_runs:
+        if warnings:
+            raise ValueError("Cannot combine incomplete evidence: " + "; ".join(warnings))
+        if len({(run["base_url"], run["component_version"]) for run in runs}) != 1:
+            raise ValueError("Combined scenarios must target the same API and component version")
     runs.sort(key=lambda run: timestamp(run["started_at"]), reverse=True)
-    payload = json.dumps({"runs": runs, "warnings": warnings}, ensure_ascii=False, separators=(",", ":"))
+    payload = json.dumps({"runs": runs, "warnings": warnings, "combine_runs": combine_runs}, ensure_ascii=False, separators=(",", ":"))
     payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     generated = datetime.now(timezone.utc).isoformat(timespec="seconds")
     html = (ASSETS / "report.html").read_text(encoding="utf-8")
@@ -188,11 +193,13 @@ def main() -> int:
     parser.add_argument("--input-dir", type=Path, default=Path(os.environ.get("API_MITIGATION_OUTPUT_DIR", "artifacts")),
                         help="Directory recursively containing evidence.sqlite files (default: API_MITIGATION_OUTPUT_DIR or artifacts)")
     parser.add_argument("--output", type=Path, help="HTML file to create (default: <input-dir>/report.html)")
+    parser.add_argument("--combine-runs", action="store_true",
+                        help="Open with all scenarios in this invocation combined; use a single cohort directory")
     args = parser.parse_args()
     if args.output is None:
         args.output = args.input_dir / "report.html"
     try:
-        count, warnings = generate_report(args.input_dir, args.output)
+        count, warnings = generate_report(args.input_dir, args.output, combine_runs=args.combine_runs)
     except (OSError, ValueError) as exc:
         parser.exit(1, f"Report generation failed: {exc}\n")
     for warning in warnings:

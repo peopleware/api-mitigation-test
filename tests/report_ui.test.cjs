@@ -372,3 +372,33 @@ vm.runInNewContext('DATA.runs[0].operations = filterOperations; selectRun(0);', 
 selectFilter('Incomplete');
 expandEvidence();
 assert.deepEqual(visibleCaseIds(), ['Case missing-checks']);
+
+// A cohort opens as one report, deduplicating operations while retaining every
+// source case (including repeated case IDs) and every failed source verdict.
+const sourceRuns = JSON.parse(elements.get('report-data').textContent).runs;
+sourceRuns[0].configuration_id = 'logout';
+sourceRuns[1].configuration_id = 'main';
+sourceRuns[0].operations.push({ entity: 'Sessions', method: 'POST', path: '/logout',
+  expected: true, tested: true, scenarios: [], cases: [statusCase('case-1', 'coverage', 'success')] });
+context.combinedSources = sourceRuns;
+vm.runInNewContext('DATA.runs = combinedSources; DATA.combined = combineRuns(DATA.runs); selectRun(-1);', context);
+assert.equal(get('selected-run').textContent, 'All scenarios');
+assert.equal(get('selected-status').textContent, 'FAIL');
+assert.equal(get('newer-run').disabled, true);
+assert(get('operations').textContent.includes('/logout'));
+assert(get('operations').textContent.includes('/items'));
+const merged = vm.runInNewContext('DATA.combined', context);
+assert.equal(merged.check_count, sourceRuns.reduce((sum, run) => sum + run.check_count, 0));
+assert.equal(merged.operations.filter(op => op.path === '/items').length, 1);
+const itemCases = merged.operations.find(op => op.path === '/items').cases;
+assert(itemCases.some(item => item.source.configuration_id === 'logout'));
+assert(itemCases.some(item => item.source.configuration_id === 'main'));
+assert.equal(sourceRuns[0].operations[0].cases[0].source, undefined);
+const logoutOperation = get('operations').querySelectorAll('.operation').find(op => op.textContent.includes('/logout'));
+logoutOperation.open = true;
+logoutOperation.querySelectorAll('.phase')[0].open = true;
+assert(logoutOperation.textContent.includes('logout'));
+get('older-run').onclick();
+assert.equal(get('selected-run').textContent, sourceRuns[0].build_number);
+get('newer-run').onclick();
+assert.equal(get('selected-run').textContent, 'All scenarios');
