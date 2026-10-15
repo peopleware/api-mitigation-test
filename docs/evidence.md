@@ -54,6 +54,13 @@ The console places `Cases` between `Operations` and `Checks`, showing generated,
 
 ## Glossary
 
+Unsupported-method coverage probes are attributed to their originating schema
+operation. For example, a TRACE probe generated for `GET /orders` belongs to that
+GET operation; its retained HTTP request still records `TRACE`. Such probes do
+not invent additional schema operations, and their check failures still block
+the owning operation. This mapping applies only to explicitly identified
+`unspecified_http_method` coverage cases with a matching source path.
+
 - **Operation:** An HTTP method and schema path, such as `POST /orders`.
 - **Case:** A generated request definition for an operation, which may have execution evidence or remain unexecuted.
 - **Not executed:** A generated case with no recorded HTTP interaction or check results; it earns no passing or coverage credit.

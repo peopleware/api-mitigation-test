@@ -44,6 +44,30 @@ def auth_event(child_count=1):
         "checks": {"parent": [{"name": "ignored_auth", "status": "success"}]}}}}
 
 
+@pytest.mark.parametrize("probe,failed", [(True, False), (True, True), (False, False)])
+def test_unsupported_method_probes_belong_to_their_source_operation(tmp_path, probe, failed):
+    event = auth_event(0)
+    scenario = event["ScenarioFinished"]
+    scenario["phase"] = "coverage"
+    value = scenario["recorder"]["cases"]["parent"]["value"]
+    value["method"] = "TRACE"
+    value["meta"] = {"phase": {"data": {"scenario": "unspecified_http_method" if probe else "other"}}}
+    interaction = scenario["recorder"]["interactions"]["parent"]
+    interaction["request"] = {"method": "TRACE", "uri": "http://test/items"}
+    interaction["response"]["status_code"] = 200 if failed else 405
+    scenario["recorder"]["checks"]["parent"] = [{"name": "unsupported_method", "status": "failure" if failed else "success"}]
+    if failed:
+        scenario["recorder"]["checks"]["parent"][0]["failure_info"] = {"failure": {"type": "UnsupportedMethodResponse"}}
+    path = tmp_path / "events.ndjson"
+    path.write_text(json.dumps(event), encoding="utf-8")
+    observations, scenarios = parse_events(path)
+    verdict, _ = assess({}, {"complete": True, "stop_reason": "completed", "operations": {"tested": 1}},
+                        {"tracecov_version": "test", "operations": []}, observations, scenarios, {("GET", "/items")}, int(failed))
+    assert observations[0]["request"]["method"] == "TRACE"
+    assert observations[0]["method"] == ("GET" if probe else "TRACE")
+    assert verdict["passed"] == (probe and not failed)
+
+
 @pytest.mark.parametrize("problem", [None, "forbidden", "missing_parent", "self_parent", "other_operation",
                                      "transition", "missing_parent_response", "missing_response", "wrong_response",
                                      "missing_auth_check", "failed_auth_check", "invalid_auth_check", "conflicting_auth_check",

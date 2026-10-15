@@ -296,6 +296,13 @@ def parse_events(path: Path) -> tuple[list[dict], list[dict]]:
         interactions = recorder.get("interactions") or {}
         for case_id, case in cases.items():
             value = case.get("value") or {}
+            operation_method, operation_path = value.get("method"), value.get("path")
+            phase_meta = (value.get("meta") or {}).get("phase") or {}
+            if (scenario.get("phase") == "coverage"
+                    and (phase_meta.get("data") or {}).get("scenario") == "unspecified_http_method"):
+                source = label.split(" ", 1)
+                if len(source) == 2 and source[0].lower() in HTTP_METHODS and source[1] == operation_path:
+                    operation_method = source[0]
             interaction = interactions.get(case_id) or {}
             result = interaction.get("response") or {}
             parent_id = case.get("parent_id")
@@ -313,7 +320,7 @@ def parse_events(path: Path) -> tuple[list[dict], list[dict]]:
                     all(check.get("status") == "success" for check in auth_checks)):
                 verification = {"parent_case_id": parent_id, "check": "ignored_auth", "status": "success"}
             observations.append({
-                "case_id": case_id, "method": value.get("method"), "path": value.get("path"),
+                "case_id": case_id, "method": operation_method, "path": operation_path,
                 "phase": scenario.get("phase"), "response_status": result.get("status_code"),
                 "request": sanitize_exchange(interaction, "request"),
                 "response": sanitize_exchange(interaction, "response"),
