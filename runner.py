@@ -113,7 +113,7 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
@@ -121,6 +121,27 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     for name in required:
         if not isinstance(value[name], str) or not value[name].strip():
             raise ValueError(f"{name} must be a nonempty string")
+    statuses = value.get("check_statuses", [])
+    if not isinstance(statuses, list):
+        raise ValueError("check_statuses must be a list")
+    seen = set()
+    for item in statuses:
+        if not isinstance(item, dict) or set(item) != {"method", "path", "check", "expected_statuses", "reason"}:
+            raise ValueError("Each check status override needs method, path, check, expected_statuses and reason")
+        if (not isinstance(item["method"], str) or item["method"].upper() not in {m.upper() for m in HTTP_METHODS}
+                or not isinstance(item["path"], str) or not item["path"].startswith("/")
+                or not isinstance(item["reason"], str) or not item["reason"].strip()):
+            raise ValueError("Invalid check status operation or reason")
+        if item["check"] not in ("positive_data_acceptance", "negative_data_rejection", "missing_required_header"):
+            raise ValueError("Unsupported check status override")
+        codes = item["expected_statuses"]
+        if not isinstance(codes, list) or not codes or any(
+                not isinstance(code, str) or not re.fullmatch(r"[1-5](?:[0-9]{2}|xx)", code) for code in codes):
+            raise ValueError("expected_statuses must contain HTTP status strings or class wildcards")
+        key = (item["method"].upper(), item["path"], item["check"])
+        if key in seen:
+            raise ValueError("Duplicate check status override")
+        seen.add(key)
     if "read_only" in value and not isinstance(value["read_only"], bool):
         raise ValueError("read_only must be a boolean")
     if urlparse(value["base_url"]).scheme not in ("http", "https"):
@@ -565,6 +586,10 @@ def main() -> int:
             expected = selected
         if config.get("read_only", False):
             expected = {(method, path) for method, path in expected if method in READ_ONLY_METHODS}
+        for item in config.get("check_statuses", []):
+            operation = (item["method"].upper(), item["path"])
+            if operation not in expected:
+                raise ValueError(f"Check status override references an unselected operation: {operation}")
         report_path, events_path, junit_path = (build_dir / name for name in ("schemathesis.json", "events.ndjson", "junit.xml"))
         coverage_path, html_path = build_dir / "coverage.json", build_dir / "coverage.html"
         env = os.environ.copy()
@@ -579,13 +604,21 @@ def main() -> int:
         if "test_operations" in config:
             for method, path in sorted(expected):
                 cmd.extend(["--include-name", f"{method} {path}"])
-        if "test_operations" in config or config.get("stateful_max_examples") is not None:
+        if "test_operations" in config or config.get("stateful_max_examples") is not None or config.get("check_statuses"):
             schemathesis_config = build_dir / "schemathesis.toml"
             lines = []
             if "test_operations" in config:
                 lines.extend(["[phases.coverage]", "unexpected-methods = []"])
             if config.get("stateful_max_examples") is not None:
                 lines.extend(["[phases.stateful.generation]", f"max-examples = {config['stateful_max_examples']}"])
+            overrides = {}
+            for item in config.get("check_statuses", []):
+                overrides.setdefault((item["method"].upper(), item["path"]), []).append(item)
+            for (method, path), items in overrides.items():
+                lines.extend(["[[operations]]", f"include-name = {json.dumps(f'{method} {path}')}"])
+                for item in items:
+                    lines.extend([f"[operations.checks.{item['check']}]",
+                                  f"expected-statuses = {json.dumps(item['expected_statuses'])}"])
             schemathesis_config.write_text("\n".join(lines) + "\n", encoding="utf-8")
             cmd = [executable, "--config-file", str(schemathesis_config), *cmd[1:]]
         with (build_dir / "console.log").open("w", encoding="utf-8") as log:

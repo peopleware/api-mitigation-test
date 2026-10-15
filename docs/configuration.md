@@ -67,3 +67,25 @@ Providing only one of `method` or `path` is invalid. Global and operation-specif
 Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Treat reports as sensitive test data because they may contain API payloads.
 
 See [CI integration](ci-integration.md) for execution and credentials, and [evidence](evidence.md) for verdict behavior.
+
+## Operation-specific HTTP status expectations
+
+Use `check_statuses` when an operation uses a documented HTTP status that differs
+from Schemathesis's defaults. For example, an absent ETag precondition uses 428:
+
+```yaml
+check_statuses:
+  - method: PUT
+    path: /items/{id}
+    check: missing_required_header
+    expected_statuses: ['400', '401', '403', '406', '415', '422', '428']
+    reason: Missing If-Match uses HTTP 428 Precondition Required
+```
+
+Each entry requires all five fields and an exact selected schema operation.
+Supported checks are `positive_data_acceptance`, `negative_data_rejection`, and
+`missing_required_header`. Values replace that check's native expected statuses
+for that operation only; include the default statuses you still expect. Duplicate
+operation/check entries and unknown operations fail configuration validation.
+These settings are recorded in the build configuration and its hash. They do not
+disable checks, accept response-schema violations, or create check exceptions.

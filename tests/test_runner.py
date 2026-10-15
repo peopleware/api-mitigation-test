@@ -216,6 +216,31 @@ def test_stateful_summary_failures_require_stateful_event_evidence(phase, accept
     assert verdict["checks"]["failed"] == 1
 
 
+@pytest.mark.parametrize("problem", [None, "empty", "unsupported_check", "no_reason", "bad_code", "duplicate"])
+def test_operation_check_statuses_are_validated(tmp_path, problem):
+    override = {"method": "PUT", "path": "/items/{id}", "check": "missing_required_header",
+                "expected_statuses": ["400", "428"], "reason": "ETag preconditions use HTTP 428"}
+    config = {"schema": "schema.yaml", "base_url": "http://example.test", "component_version": "test",
+              "configuration_id": "test", "check_statuses": [override]}
+    if problem == "empty":
+        override["expected_statuses"] = []
+    elif problem == "unsupported_check":
+        override["check"] = "response_schema_conformance"
+    elif problem == "no_reason":
+        override["reason"] = " "
+    elif problem == "bad_code":
+        override["expected_statuses"] = ["oops"]
+    elif problem == "duplicate":
+        config["check_statuses"].append(override.copy())
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    if problem:
+        with pytest.raises(ValueError):
+            read_config(path)
+    else:
+        assert read_config(path)[0]["check_statuses"] == [override]
+
+
 @pytest.mark.parametrize("passed", [True, False])
 def test_console_summary_is_compact(passed):
     verdict = {"passed": passed, "issues": [f"Missing check or response evidence for {i}" for i in range(2000)],
@@ -413,6 +438,31 @@ def run(tmp_path, server, *, fmt="json", local=False, exceptions=None, threshold
     proc = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
     dirs = [p for p in (tmp_path / "out").iterdir() if p.is_dir()] if (tmp_path / "out").exists() else []
     return proc, (dirs[0] if dirs else None)
+
+
+@pytest.mark.parametrize("include_unconfigured", [False, True])
+def test_check_statuses_apply_only_to_the_configured_operation(tmp_path, server, include_unconfigured):
+    schema = {"openapi": "3.0.3", "info": {"title": "Preconditions", "version": "1"}, "paths": {
+        "/preconditions": {"get": {"parameters": [{"name": "If-Match", "in": "header", "required": True,
+                                                   "schema": {"type": "string", "minLength": 1}}],
+                                   "responses": {str(code): {"description": "result"} for code in (200, 412, 428)}}}}}
+    if include_unconfigured:
+        schema["paths"]["/unconfigured"] = {"get": {"responses": {
+            "200": {"description": "ok"}, "412": {"description": "unexpected precondition"}}}}
+    statuses = [{"method": "GET", "path": "/preconditions", "check": check, "reason": "ETag semantics",
+                 "expected_statuses": codes} for check, codes in (
+                     ("positive_data_acceptance", ["2xx", "401", "403", "404", "409", "412", "429", "5xx"]),
+                     ("missing_required_header", ["400", "401", "403", "406", "415", "422", "428"]))]
+    proc, out = run(tmp_path, server, local=True, schema=schema, exceptions=[],
+                    thresholds={"check_statuses": statuses, "test_operations": [
+                        {"method": "GET", "path": path} for path in schema["paths"]]})
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert proc.returncode == int(include_unconfigured), proc.stdout + proc.stderr
+    assert verdict["passed"] == (not include_unconfigured)
+    assert not any(failure["path"] == "/preconditions" for failure in verdict["observed_failures"])
+    if include_unconfigured:
+        assert any(failure["path"] == "/unconfigured" and failure["failure_type"] == "RejectedPositiveData"
+                   for failure in verdict["observed_failures"])
 
 
 @pytest.mark.parametrize("fmt,local", [("json", False), ("yaml", True)])

@@ -21,6 +21,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/openapi.json":
             self.send_json(200, SCHEMA)
+        elif self.path == "/preconditions":
+            self.send_json(428 if not self.headers.get("If-Match") else 412, {})
+        elif self.path == "/unconfigured":
+            self.send_json(412, {})
         elif self.path in ("/items", "/other"):
             if not self.authorized():
                 return
