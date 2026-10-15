@@ -383,6 +383,19 @@ sourceRuns[0].operations.push({ entity: 'Sessions', method: 'POST', path: '/logo
 context.combinedSources = sourceRuns;
 vm.runInNewContext('DATA.runs = combinedSources; DATA.combined = combineRuns(DATA.runs); selectRun(-1);', context);
 assert.equal(get('selected-run').textContent, 'All scenarios');
+
+// Native response coverage remains distinct from successful method probes.
+vm.runInNewContext(`
+  const coveredOp = DATA.combined.operations.find(op => op.path === '/items');
+  coveredOp.response_coverage = [{ status: '200', hits: 1 }, { status: '405', hits: 0 }, { status: '500', hits: 0 }];
+  coveredOp.cases.push({ case_id: 'method-probe', phase: 'coverage', response_status: 405,
+    request: { method: 'TRACE' }, checks: [{ name: 'unsupported_method', status: 'success' }] });
+  renderRun();
+`, context);
+assert(get('run-notices').textContent.includes('33.33%'));
+assert(get('run-notices').textContent.includes('405 was observed'));
+assert(get('run-notices').textContent.includes('→ 500'));
+assert.equal(vm.runInNewContext('documentedResponseCoverage(DATA.combined).covered', context), 1);
 assert.equal(get('selected-status').textContent, 'FAIL');
 assert.equal(get('newer-run').disabled, true);
 assert(get('operations').textContent.includes('/logout'));

@@ -76,10 +76,13 @@ def load_database(path: Path, output: Path) -> list[dict]:
             operations = []
             by_id = {}
             for operation in operation_rows:
+                coverage = decode_json(operation.get("coverage_json"), {}) or {}
                 item = {"method": operation["method"], "path": operation["path"],
                         "entity": entity_name(operation), "summary": operation.get("summary"),
                         "expected": bool(operation["expected"]), "tested": bool(operation["tested"]),
-                        "scenarios": [], "cases": []}
+                        "scenarios": [], "cases": [],
+                        "response_coverage": [{"status": str(response["status"]), "hits": response.get("hits", 0)}
+                                              for response in coverage.get("responses", [])]}
                 operations.append(item)
                 by_id[operation["id"]] = item
             unlinked = {"method": "", "path": "Unlinked evidence", "entity": "Unlinked evidence", "summary": None, "expected": False,

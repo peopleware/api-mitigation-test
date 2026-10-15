@@ -54,6 +54,12 @@ The console places `Cases` between `Operations` and `Checks`, showing generated,
 
 ## Combined scenarios
 
+The report displays documented response coverage and an expandable list of
+method/path/status variants without native TraceCov hits. A combined view takes
+the union of recorded variants, rather than averaging scenario percentages.
+For missing 405 coverage, the list identifies successful unsupported-method
+probes on the same URL without adding those probes to the native coverage count.
+
 For one test invocation split into multiple scenarios (for example, an
 administrator run, admission failures and session logout), rebuild its single
 cohort directory with `report --input-dir <cohort> --combine-runs`. The report

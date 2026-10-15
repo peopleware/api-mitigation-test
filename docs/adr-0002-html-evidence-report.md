@@ -8,7 +8,9 @@ Per-build SQLite files preserve auditable results but are difficult to inspect a
 
 ## Decision
 
-Generate one self-contained HTML report from all `evidence.sqlite` files available under the output root after each run. Also provide a rebuild command for archived databases. Report generation failures warn without changing the test verdict or exit status. Older database schemas remain readable, with absent HTTP exchanges clearly labeled. Companion TraceCov HTML is linked only when available; coverage measures are not copied into this report.
+Generate one self-contained HTML report from all `evidence.sqlite` files available under the output root after each run. Also provide a rebuild command for archived databases. Report generation failures warn without changing the test verdict or exit status. Older database schemas remain readable, with absent HTTP exchanges clearly labeled. Companion TraceCov HTML is linked only when available.
+
+The combined scenario view also summarizes documented response coverage from the retained native TraceCov operation data. Count each method/path/status once across scenarios and list the variants without native hits. Unsupported-method probes that received 405 on the same URL are identified separately; they do not retroactively earn native response coverage. This keeps a missing probe distinct from TraceCov's attribution limitation. Other coverage dimensions remain in the companion TraceCov reports, and stored verdicts are never revised by this presentation.
 
 For newly written databases, store sanitized and bounded request and response details with each observation. Redact sensitive-looking headers, URL fields, and JSON keys; omit non-JSON bodies. Limit stored JSON body text to 64 KiB. Retain operation tags and summaries from the tested schema to group the report by entity; use the first tag, with a resource-path fallback for untagged operations and older databases. Keep the report and database under the consuming project's evidence access controls because redaction cannot guarantee removal of every secret.
 

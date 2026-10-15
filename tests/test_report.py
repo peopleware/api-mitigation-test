@@ -68,6 +68,16 @@ def test_combined_report_does_not_silently_omit_unreadable_evidence(tmp_path):
         generate_report(tmp_path, tmp_path / "report.html", combine_runs=True)
 
 
+def test_report_retains_native_response_coverage_without_inventing_hits(tmp_path):
+    database = make_database(tmp_path / "run", "native", "2026-01-01T00:00:00+00:00")
+    responses = [{"status": "200", "hits": 1}, {"status": "405", "hits": 0}, {"status": "500", "hits": 0}]
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE operation SET coverage_json = ?", (json.dumps({"responses": responses}),))
+    output = tmp_path / "report.html"
+    generate_report(tmp_path, output)
+    assert embedded_data(output)["runs"][0]["operations"][0]["response_coverage"] == responses
+
+
 @pytest.mark.parametrize("mode", ["default", "input", "output", "environment"])
 def test_report_command_defaults_and_overrides(tmp_path, monkeypatch, mode):
     from report import main

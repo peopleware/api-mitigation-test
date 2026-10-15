@@ -29,10 +29,15 @@ function combineRuns(runs) {
     combined.issues.push(...run.issues.map(issue => run.configuration_id + ': ' + issue));
     for (const op of run.operations) {
       const key = op.method + ' ' + op.path;
-      if (!operations.has(key)) operations.set(key, { ...op, expected: false, tested: false, cases: [], scenarios: [] });
+      if (!operations.has(key)) operations.set(key, { ...op, expected: false, tested: false, cases: [], scenarios: [], response_coverage: [] });
       const target = operations.get(key);
       target.expected ||= op.expected;
       target.tested ||= op.tested;
+      for (const response of op.response_coverage || []) {
+        const existing = target.response_coverage.find(item => item.status === response.status);
+        if (existing) existing.hits += response.hits;
+        else target.response_coverage.push({ ...response });
+      }
       const source = { build_number: run.build_number, configuration_id: run.configuration_id };
       target.cases.push(...op.cases.map(item => ({ ...item, source })));
       target.scenarios.push(...op.scenarios.map(item => ({ ...item, source })));
@@ -44,6 +49,15 @@ function combineRuns(runs) {
 DATA.combined = DATA.combine_runs ? combineRuns(DATA.runs) : null;
 const state = { run: DATA.combined ? -1 : 0, filter: 'all', view: 'report', entity: '' };
 const currentRun = () => state.run === -1 ? DATA.combined : DATA.runs[state.run];
+function documentedResponseCoverage(run) {
+  const rows = run.operations.flatMap(op => (op.response_coverage || []).map(response => ({ ...response, method: op.method, path: op.path })));
+  if (!rows.length) return null;
+  const covered = rows.filter(row => row.hits > 0).length;
+  const uncovered = rows.filter(row => !row.hits).map(row => ({ ...row,
+    methodProbe: row.status === '405' && run.operations.some(op => op.path === row.path && op.cases.some(item =>
+      item.response_status === 405 && item.request?.method && item.request.method !== op.method)) }));
+  return { covered, total: rows.length, percent: (100 * covered / rows.length).toFixed(2), uncovered };
+}
 const PHASES = ['examples', 'coverage', 'fuzzing', 'stateful'];
 const STATUS = {
   pass: { label: 'Passed', icon: '✓', edge: '#426e54' },
@@ -184,6 +198,19 @@ function renderRun() {
   clear(notes);
   if (!run.http_available) notes.append(node('p', 'notice', 'This older run has no recorded HTTP exchanges.'));
   for (const issue of run.issues) notes.append(node('p', 'notice', issue));
+  const coverage = documentedResponseCoverage(run);
+  if (coverage) {
+    notes.append(node('p', 'notice', 'Documented response coverage: ' + coverage.percent + '% · ' + coverage.covered + '/' + coverage.total +
+      ' unique method/path/status variants recorded by TraceCov.'));
+    if (coverage.uncovered.length) {
+      const details = node('details', 'issues');
+      details.append(node('summary', '', 'Response variants without TraceCov coverage · ' + coverage.uncovered.length));
+      for (const response of coverage.uncovered) details.append(node('p', 'notice',
+        response.method + ' ' + response.path + ' → ' + response.status +
+        (response.methodProbe ? ' · 405 was observed on this URL by unsupported-method probes; TraceCov does not credit it to the declared operation.' : '')));
+      notes.append(details);
+    }
+  }
   notes.hidden = !notes.childNodes.length;
   $('run-context-summary').textContent = 'Run details · ' + (run.configuration_id || 'Unspecified configuration') + ' · v' + (run.component_version || 'unknown');
   const provenance = $('run-provenance');
