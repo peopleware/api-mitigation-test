@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from fixture_api import SCHEMA
+from runner import redact_evidence_tokens
 from runner import assess, console_summary, exception_for, parse_events, path_glob_regex, read_config, schemathesis_executable, select_operations, write_database
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,16 @@ RUNNER = ROOT / "runner.py"
 EXCEPTION = {"method": "POST", "path": "/items", "failure_type": "AcceptedNegativeData",
              "reason": "Fixture accepts missing body", "owner": "test team", "expiry": "2099-01-01"}
 GLOBAL_EXCEPTION = {key: value for key, value in EXCEPTION.items() if key not in {"method", "path"}}
+
+
+def test_evidence_redacts_each_configured_auth_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_MITIGATION_BEARER_TOKEN", "main-secret-token")
+    monkeypatch.setenv("API_MITIGATION_LOGOUT_TOKEN", "logout-secret-token")
+    monkeypatch.setenv("API_MITIGATION_EMPTY_TOKEN", "")
+    path = tmp_path / "events.ndjson"
+    path.write_text("main-secret-token logout-secret-token ordinary text", encoding="utf-8")
+    redact_evidence_tokens([path, tmp_path / "absent"])
+    assert path.read_text(encoding="utf-8") == "[REDACTED] [REDACTED] ordinary text"
 
 
 def auth_event(child_count=1):

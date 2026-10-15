@@ -107,6 +107,19 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def redact_evidence_tokens(files) -> None:
+    tokens = {value for name, value in os.environ.items()
+              if name.startswith("API_MITIGATION_") and name.endswith("_TOKEN") and value}
+    if not tokens:
+        return
+    for file in files:
+        if file.is_file():
+            content = file.read_text(encoding="utf-8")
+            for token in sorted(tokens, key=len, reverse=True):
+                content = content.replace(token, "[REDACTED]")
+            file.write_text(content, encoding="utf-8")
+
+
 def read_config(path: Path) -> tuple[dict, bytes]:
     raw = path.read_bytes()
     value = json.loads(raw) if path.suffix.lower() == ".json" else yaml.safe_load(raw)
@@ -623,12 +636,7 @@ def main() -> int:
             cmd = [executable, "--config-file", str(schemathesis_config), *cmd[1:]]
         with (build_dir / "console.log").open("w", encoding="utf-8") as log:
             process = subprocess.run(cmd, env=env, cwd=Path(__file__).parent, stdout=log, stderr=subprocess.STDOUT, check=False)
-        token = os.environ.get("API_MITIGATION_BEARER_TOKEN")
-        if token:
-            for file in (report_path, events_path, junit_path, coverage_path, html_path, build_dir / "console.log"):
-                if file.is_file():
-                    content = file.read_text(encoding="utf-8")
-                    file.write_text(content.replace(token, "[REDACTED]"), encoding="utf-8")
+        redact_evidence_tokens((report_path, events_path, junit_path, coverage_path, html_path, build_dir / "console.log"))
         evidence_files = (report_path, events_path, junit_path, coverage_path, html_path)
         missing_evidence = [f"Missing evidence file: {file.name}" for file in evidence_files if not file.is_file() or file.stat().st_size == 0]
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {}
