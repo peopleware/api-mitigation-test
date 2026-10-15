@@ -126,7 +126,7 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
@@ -157,6 +157,8 @@ def read_config(path: Path) -> tuple[dict, bytes]:
         seen.add(key)
     if "read_only" in value and not isinstance(value["read_only"], bool):
         raise ValueError("read_only must be a boolean")
+    if "require_success_responses" in value and not isinstance(value["require_success_responses"], bool):
+        raise ValueError("require_success_responses must be a boolean")
     if urlparse(value["base_url"]).scheme not in ("http", "https"):
         raise ValueError("base_url must be an HTTP(S) URL")
     for dim in DIMENSIONS:
@@ -356,6 +358,12 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         issues.append("Tested operation count disagrees with event evidence")
     if not tested <= expected:
         issues.append("Event operations differ from schema")
+    if config.get("require_success_responses", False):
+        observed_successes = {(o["method"], o["path"]) for o in observations
+                              if not not_executed(o) and isinstance(o.get("response_status"), int)
+                              and 200 <= o["response_status"] < 300}
+        for method, path in sorted(expected - observed_successes):
+            issues.append(f"No successful response observed: {method} {path}")
     if not any(s["status"] == "success" for s in scenarios) and not any(s["status"] == "failure" for s in scenarios):
         issues.append("No completed test scenarios")
     for o in observations:

@@ -32,6 +32,22 @@ def test_evidence_redacts_each_configured_auth_token(tmp_path, monkeypatch):
     assert path.read_text(encoding="utf-8") == "[REDACTED] [REDACTED] ordinary text"
 
 
+@pytest.mark.parametrize("status,enabled", [(200, True), (201, True), (204, True), (412, True), (None, True), (403, False)])
+def test_success_response_gate_requires_success_for_each_selected_operation(status, enabled):
+    observations = [{"case_id": "first", "method": "GET", "path": "/first", "response_status": 200,
+                     "checks": [{"status": "success"}]},
+                    {"case_id": "second", "method": "GET", "path": "/second", "response_status": status,
+                     "checks": [{"status": "success"}]}]
+    verdict, _ = assess({"require_success_responses": enabled},
+                        {"complete": True, "stop_reason": "completed", "operations": {"tested": 2}},
+                        {"tracecov_version": "test", "operations": []}, observations,
+                        [{"operation": "GET /first", "status": "success"}],
+                        {("GET", "/first"), ("GET", "/second")}, 0)
+    missing = "No successful response observed: GET /second"
+    assert (missing in verdict["issues"]) == (enabled and status not in (200, 201, 204))
+    assert verdict["passed"] == (status in (200, 201, 204) or not enabled)
+
+
 def auth_event(child_count=1):
     value = {"method": "GET", "path": "/items"}
     cases = {"parent": {"value": value, "parent_id": None, "transition": None}}

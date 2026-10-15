@@ -20,6 +20,8 @@ min_examples_coverage: 0
 min_responses_coverage: 75
 # Optional: cap generated cases per operation in the stateful phase
 stateful_max_examples: 20
+# Optional: require a 2xx response for every selected operation
+require_success_responses: true
 check_exceptions:
   - method: POST
     path: /orders
@@ -30,6 +32,12 @@ check_exceptions:
 ```
 
 `stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
+
+`require_success_responses` defaults to false. Set it for functional scenarios
+that must exercise each selected operation successfully. An operation with only
+4xx/5xx results, or no executed response, fails this gate even if other checks
+pass. This does not replace schema or error checks. Leave it false for deliberate
+denial-only scenarios, such as an authenticated identity without application access.
 
 `test_operations` is optional. When present, it must be a nonempty list of HTTP methods and exact OpenAPI schema paths or path globs. Methods are case-insensitive; paths are case-sensitive. Patterns match the entire schema path, including literal parameter placeholders such as `{orderId}`, rather than concrete request URLs.
 
