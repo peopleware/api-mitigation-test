@@ -346,6 +346,12 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
                     issues.append(f"Unexplained {kind or 'unknown'} failure: {o['method']} {o['path']}")
     reported_types = {(f.get("type"), op) for f in report.get("failures", []) for op in f.get("operations", [])}
     observed_types = {(f["failure_type"], f"{f['method']} {f['path']}") for f in failures}
+    observed_types.update(
+        (check["failure_info"]["failure"].get("type"), "Stateful tests")
+        for observation in observations if observation.get("phase") == "stateful"
+        for check in observation.get("checks") or []
+        if check.get("status") == "failure" and (check.get("failure_info") or {}).get("failure")
+    )
     if reported_types - observed_types:
         issues.append("Verdict contains failures missing from event evidence")
         blocked_operations.update(tuple(op.split(" ", 1)) for _, op in reported_types - observed_types)

@@ -200,6 +200,22 @@ def test_passed_operations_require_complete_successful_evidence(problem):
                                      "skipped": ["GET /untested"]}
 
 
+@pytest.mark.parametrize("phase,accepted", [("stateful", True), ("stateful", False), ("fuzzing", True)])
+def test_stateful_summary_failures_require_stateful_event_evidence(phase, accepted):
+    observation = {"case_id": "bad", "method": "POST", "path": "/items", "phase": phase,
+                   "response_status": 200, "checks": [{"status": "failure", "failure_info": {
+                       "failure": {"type": "AcceptedNegativeData"}}}]}
+    config = {"check_exceptions": [EXCEPTION]} if accepted else {}
+    verdict, _ = assess(config, {"complete": True, "stop_reason": "completed", "operations": {"tested": 1},
+                                "failures": [{"type": "AcceptedNegativeData", "operations": ["Stateful tests"]}]},
+                        {"tracecov_version": "test", "operations": []}, [observation],
+                        [{"operation": "Stateful tests", "phase": phase, "status": "failure"}],
+                        {("POST", "/items")}, 1)
+    assert verdict["passed"] == (phase == "stateful" and accepted)
+    assert ("Verdict contains failures missing from event evidence" in verdict["issues"]) == (phase != "stateful")
+    assert verdict["checks"]["failed"] == 1
+
+
 @pytest.mark.parametrize("passed", [True, False])
 def test_console_summary_is_compact(passed):
     verdict = {"passed": passed, "issues": [f"Missing check or response evidence for {i}" for i in range(2000)],
