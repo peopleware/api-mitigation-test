@@ -7,7 +7,7 @@ See [CONTRIBUTING](../CONTRIBUTING.md) for Python setup and the test suite. Use 
 With Docker running, build from the root of this runner repository:
 
 ```sh
-docker build -t daviddkppw/api-mitigation-test:local .
+docker build -t ppwcode/api-mitigation-test:local .
 ```
 
 From PowerShell 7, run the repository-owned container smoke test:
@@ -33,7 +33,7 @@ docker run --rm \
   -e API_MITIGATION_BUILD_ID=local-test-001 \
   -e API_MITIGATION_BEARER_TOKEN \
   -v "$PWD:/workspace" -w /workspace \
-  daviddkppw/api-mitigation-test:local --config api-mitigation.yml
+  ppwcode/api-mitigation-test:local --config api-mitigation.yml
 ```
 
 Use a new build ID for each invocation. Add `--network` when the API is on a Docker network. Confirm that the API and schema are reachable from the container, not only from the host.

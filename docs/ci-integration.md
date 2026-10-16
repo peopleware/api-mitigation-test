@@ -21,7 +21,7 @@ docker run --rm \
   -e API_MITIGATION_BUILD_ID=ci-build-123 \
   -e API_MITIGATION_BEARER_TOKEN \
   -v "$PWD:/workspace" -w /workspace \
-  daviddkppw/api-mitigation-test:<version> --config tests/api-mitigation.yaml
+  ppwcode/api-mitigation-test:<version> --config tests/api-mitigation.yaml
 ```
 
 Add `--network` with your target's network name when required. Outside GitHub/Bitbucket, `API_MITIGATION_BUILD_ID` is mandatory. Do not reuse it in the same output root. See [evidence outputs](evidence.md).
@@ -61,7 +61,7 @@ pipelines:
     - step:
         name: API mitigation test
         script:
-          - pipe: docker://daviddkppw/api-mitigation-test:<version>
+          - pipe: docker://ppwcode/api-mitigation-test:<version>
             variables:
               CONFIG: tests/api-mitigation.yaml
               API_MITIGATION_BEARER_TOKEN: $API_MITIGATION_BEARER_TOKEN
