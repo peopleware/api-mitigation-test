@@ -42,6 +42,42 @@ def embedded_data(path: Path) -> dict:
     return json.loads(match.group(1))
 
 
+def test_combined_report_preserves_source_runs_and_rejects_incompatible_targets(tmp_path):
+    make_database(tmp_path / "main", "main", "2026-01-01T00:00:00+00:00")
+    logout = make_database(tmp_path / "logout", "logout", "2026-01-01T00:05:00+00:00", failed=True)
+    output = tmp_path / "report.html"
+    originals = {file: file.read_bytes() for file in tmp_path.rglob("evidence.sqlite")}
+    generate_report(tmp_path, output, combine_runs=True)
+    data = embedded_data(output)
+    assert data["combine_runs"] is True
+    assert len(data["runs"]) == 2
+    assert [run["passed"] for run in data["runs"]] == [False, True]
+    assert all(file.read_bytes() == original for file, original in originals.items())
+    with sqlite3.connect(logout) as db:
+        db.execute("UPDATE build SET base_url = 'https://another-api.example.test'")
+    with pytest.raises(ValueError, match="same API and component version"):
+        generate_report(tmp_path, output, combine_runs=True)
+
+
+def test_combined_report_does_not_silently_omit_unreadable_evidence(tmp_path):
+    make_database(tmp_path / "main", "main", "2026-01-01T00:00:00+00:00")
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "evidence.sqlite").write_text("broken")
+    with pytest.raises(ValueError, match="Cannot combine incomplete evidence"):
+        generate_report(tmp_path, tmp_path / "report.html", combine_runs=True)
+
+
+def test_report_retains_native_response_coverage_without_inventing_hits(tmp_path):
+    database = make_database(tmp_path / "run", "native", "2026-01-01T00:00:00+00:00")
+    responses = [{"status": "200", "hits": 1}, {"status": "405", "hits": 0}, {"status": "500", "hits": 0}]
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE operation SET coverage_json = ?", (json.dumps({"responses": responses}),))
+    output = tmp_path / "report.html"
+    generate_report(tmp_path, output)
+    assert embedded_data(output)["runs"][0]["operations"][0]["response_coverage"] == responses
+
+
 @pytest.mark.parametrize("mode", ["default", "input", "output", "environment"])
 def test_report_command_defaults_and_overrides(tmp_path, monkeypatch, mode):
     from report import main

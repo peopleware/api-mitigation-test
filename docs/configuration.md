@@ -20,6 +20,8 @@ min_examples_coverage: 0
 min_responses_coverage: 75
 # Optional: cap generated cases per operation in the stateful phase
 stateful_max_examples: 20
+# Optional: require a 2xx response for every selected operation
+require_success_responses: true
 check_exceptions:
   - method: POST
     path: /orders
@@ -30,6 +32,12 @@ check_exceptions:
 ```
 
 `stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
+
+`require_success_responses` defaults to false. Set it for functional scenarios
+that must exercise each selected operation successfully. An operation with only
+4xx/5xx results, or no executed response, fails this gate even if other checks
+pass. This does not replace schema or error checks. Leave it false for deliberate
+denial-only scenarios, such as an authenticated identity without application access.
 
 `test_operations` is optional. When present, it must be a nonempty list of HTTP methods and exact OpenAPI schema paths or path globs. Methods are case-insensitive; paths are case-sensitive. Patterns match the entire schema path, including literal parameter placeholders such as `{orderId}`, rather than concrete request URLs.
 
@@ -64,6 +72,36 @@ check_exceptions:
 
 Providing only one of `method` or `path` is invalid. Global and operation-specific exceptions can coexist; the first unexpired matching entry supplies the recorded exception metadata. Failure types always match exactly, and expired exceptions never match. Original failure details remain in `events.ndjson`, `verdict.json`, and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Exceptions do not bypass coverage thresholds, missing evidence, or execution errors.
 
-Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Treat reports as sensitive test data because they may contain API payloads.
+Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Additional identities supplied through `API_MITIGATION_*_TOKEN` variables are redacted as well. Treat reports as sensitive test data because they may contain API payloads.
 
 See [CI integration](ci-integration.md) for execution and credentials, and [evidence](evidence.md) for verdict behavior.
+
+## Operation-specific HTTP status expectations
+
+Use `check_statuses` when an operation uses a documented HTTP status that differs
+from Schemathesis's defaults. For example, an absent ETag precondition uses 428:
+
+```yaml
+check_statuses:
+  - method: PUT
+    path: /items/{id}
+    check: missing_required_header
+    expected_statuses: ['400', '401', '403', '406', '415', '422', '428']
+    reason: Missing If-Match uses HTTP 428 Precondition Required
+```
+
+Each entry requires all five fields and an exact selected schema operation.
+Supported checks are `positive_data_acceptance`, `negative_data_rejection`,
+`missing_required_header`, and `not_a_server_error`. Values replace that check's native expected statuses
+for that operation only; include the default statuses you still expect. Duplicate
+operation/check entries and unknown operations fail configuration validation.
+These settings are recorded in the build configuration and its hash. They do not
+disable checks, accept response-schema violations, or create check exceptions.
+
+For an isolated dependency-outage scenario, `not_a_server_error` can explicitly
+expect `['1xx', '2xx', '3xx', '4xx', '503']` on the selected health operation.
+That operation still rejects unexpected 500/502 responses and validates the
+documented 503 response schema. Keep this expectation in the outage scenario;
+normal scenarios retain their default server-error checks. Configure
+`positive_data_acceptance` for 503 there as well when valid requests should
+observe the unavailable dependency.

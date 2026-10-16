@@ -107,13 +107,26 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def redact_evidence_tokens(files) -> None:
+    tokens = {value for name, value in os.environ.items()
+              if name.startswith("API_MITIGATION_") and name.endswith("_TOKEN") and value}
+    if not tokens:
+        return
+    for file in files:
+        if file.is_file():
+            content = file.read_text(encoding="utf-8")
+            for token in sorted(tokens, key=len, reverse=True):
+                content = content.replace(token, "[REDACTED]")
+            file.write_text(content, encoding="utf-8")
+
+
 def read_config(path: Path) -> tuple[dict, bytes]:
     raw = path.read_bytes()
     value = json.loads(raw) if path.suffix.lower() == ".json" else yaml.safe_load(raw)
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
@@ -121,8 +134,31 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     for name in required:
         if not isinstance(value[name], str) or not value[name].strip():
             raise ValueError(f"{name} must be a nonempty string")
+    statuses = value.get("check_statuses", [])
+    if not isinstance(statuses, list):
+        raise ValueError("check_statuses must be a list")
+    seen = set()
+    for item in statuses:
+        if not isinstance(item, dict) or set(item) != {"method", "path", "check", "expected_statuses", "reason"}:
+            raise ValueError("Each check status override needs method, path, check, expected_statuses and reason")
+        if (not isinstance(item["method"], str) or item["method"].upper() not in {m.upper() for m in HTTP_METHODS}
+                or not isinstance(item["path"], str) or not item["path"].startswith("/")
+                or not isinstance(item["reason"], str) or not item["reason"].strip()):
+            raise ValueError("Invalid check status operation or reason")
+        if item["check"] not in ("positive_data_acceptance", "negative_data_rejection", "missing_required_header", "not_a_server_error"):
+            raise ValueError("Unsupported check status override")
+        codes = item["expected_statuses"]
+        if not isinstance(codes, list) or not codes or any(
+                not isinstance(code, str) or not re.fullmatch(r"[1-5](?:[0-9]{2}|xx)", code) for code in codes):
+            raise ValueError("expected_statuses must contain HTTP status strings or class wildcards")
+        key = (item["method"].upper(), item["path"], item["check"])
+        if key in seen:
+            raise ValueError("Duplicate check status override")
+        seen.add(key)
     if "read_only" in value and not isinstance(value["read_only"], bool):
         raise ValueError("read_only must be a boolean")
+    if "require_success_responses" in value and not isinstance(value["require_success_responses"], bool):
+        raise ValueError("require_success_responses must be a boolean")
     if urlparse(value["base_url"]).scheme not in ("http", "https"):
         raise ValueError("base_url must be an HTTP(S) URL")
     for dim in DIMENSIONS:
@@ -262,6 +298,13 @@ def parse_events(path: Path) -> tuple[list[dict], list[dict]]:
         interactions = recorder.get("interactions") or {}
         for case_id, case in cases.items():
             value = case.get("value") or {}
+            operation_method, operation_path = value.get("method"), value.get("path")
+            phase_meta = (value.get("meta") or {}).get("phase") or {}
+            if (scenario.get("phase") == "coverage"
+                    and (phase_meta.get("data") or {}).get("scenario") == "unspecified_http_method"):
+                source = label.split(" ", 1)
+                if len(source) == 2 and source[0].lower() in HTTP_METHODS and source[1] == operation_path:
+                    operation_method = source[0]
             interaction = interactions.get(case_id) or {}
             result = interaction.get("response") or {}
             parent_id = case.get("parent_id")
@@ -279,7 +322,7 @@ def parse_events(path: Path) -> tuple[list[dict], list[dict]]:
                     all(check.get("status") == "success" for check in auth_checks)):
                 verification = {"parent_case_id": parent_id, "check": "ignored_auth", "status": "success"}
             observations.append({
-                "case_id": case_id, "method": value.get("method"), "path": value.get("path"),
+                "case_id": case_id, "method": operation_method, "path": operation_path,
                 "phase": scenario.get("phase"), "response_status": result.get("status_code"),
                 "request": sanitize_exchange(interaction, "request"),
                 "response": sanitize_exchange(interaction, "response"),
@@ -315,6 +358,12 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         issues.append("Tested operation count disagrees with event evidence")
     if not tested <= expected:
         issues.append("Event operations differ from schema")
+    if config.get("require_success_responses", False):
+        observed_successes = {(o["method"], o["path"]) for o in observations
+                              if not not_executed(o) and isinstance(o.get("response_status"), int)
+                              and 200 <= o["response_status"] < 300}
+        for method, path in sorted(expected - observed_successes):
+            issues.append(f"No successful response observed: {method} {path}")
     if not any(s["status"] == "success" for s in scenarios) and not any(s["status"] == "failure" for s in scenarios):
         issues.append("No completed test scenarios")
     for o in observations:
@@ -346,6 +395,12 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
                     issues.append(f"Unexplained {kind or 'unknown'} failure: {o['method']} {o['path']}")
     reported_types = {(f.get("type"), op) for f in report.get("failures", []) for op in f.get("operations", [])}
     observed_types = {(f["failure_type"], f"{f['method']} {f['path']}") for f in failures}
+    observed_types.update(
+        (check["failure_info"]["failure"].get("type"), "Stateful tests")
+        for observation in observations if observation.get("phase") == "stateful"
+        for check in observation.get("checks") or []
+        if check.get("status") == "failure" and (check.get("failure_info") or {}).get("failure")
+    )
     if reported_types - observed_types:
         issues.append("Verdict contains failures missing from event evidence")
         blocked_operations.update(tuple(op.split(" ", 1)) for _, op in reported_types - observed_types)
@@ -559,6 +614,10 @@ def main() -> int:
             expected = selected
         if config.get("read_only", False):
             expected = {(method, path) for method, path in expected if method in READ_ONLY_METHODS}
+        for item in config.get("check_statuses", []):
+            operation = (item["method"].upper(), item["path"])
+            if operation not in expected:
+                raise ValueError(f"Check status override references an unselected operation: {operation}")
         report_path, events_path, junit_path = (build_dir / name for name in ("schemathesis.json", "events.ndjson", "junit.xml"))
         coverage_path, html_path = build_dir / "coverage.json", build_dir / "coverage.html"
         env = os.environ.copy()
@@ -573,23 +632,26 @@ def main() -> int:
         if "test_operations" in config:
             for method, path in sorted(expected):
                 cmd.extend(["--include-name", f"{method} {path}"])
-        if "test_operations" in config or config.get("stateful_max_examples") is not None:
+        if "test_operations" in config or config.get("stateful_max_examples") is not None or config.get("check_statuses"):
             schemathesis_config = build_dir / "schemathesis.toml"
             lines = []
             if "test_operations" in config:
                 lines.extend(["[phases.coverage]", "unexpected-methods = []"])
             if config.get("stateful_max_examples") is not None:
                 lines.extend(["[phases.stateful.generation]", f"max-examples = {config['stateful_max_examples']}"])
+            overrides = {}
+            for item in config.get("check_statuses", []):
+                overrides.setdefault((item["method"].upper(), item["path"]), []).append(item)
+            for (method, path), items in overrides.items():
+                lines.extend(["[[operations]]", f"include-name = {json.dumps(f'{method} {path}')}"])
+                for item in items:
+                    lines.extend([f"[operations.checks.{item['check']}]",
+                                  f"expected-statuses = {json.dumps(item['expected_statuses'])}"])
             schemathesis_config.write_text("\n".join(lines) + "\n", encoding="utf-8")
             cmd = [executable, "--config-file", str(schemathesis_config), *cmd[1:]]
         with (build_dir / "console.log").open("w", encoding="utf-8") as log:
             process = subprocess.run(cmd, env=env, cwd=Path(__file__).parent, stdout=log, stderr=subprocess.STDOUT, check=False)
-        token = os.environ.get("API_MITIGATION_BEARER_TOKEN")
-        if token:
-            for file in (report_path, events_path, junit_path, coverage_path, html_path, build_dir / "console.log"):
-                if file.is_file():
-                    content = file.read_text(encoding="utf-8")
-                    file.write_text(content.replace(token, "[REDACTED]"), encoding="utf-8")
+        redact_evidence_tokens((report_path, events_path, junit_path, coverage_path, html_path, build_dir / "console.log"))
         evidence_files = (report_path, events_path, junit_path, coverage_path, html_path)
         missing_evidence = [f"Missing evidence file: {file.name}" for file in evidence_files if not file.is_file() or file.stat().st_size == 0]
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {}

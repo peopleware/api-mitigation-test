@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from fixture_api import SCHEMA
+from runner import redact_evidence_tokens
 from runner import assess, console_summary, exception_for, parse_events, path_glob_regex, read_config, schemathesis_executable, select_operations, write_database
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,32 @@ RUNNER = ROOT / "runner.py"
 EXCEPTION = {"method": "POST", "path": "/items", "failure_type": "AcceptedNegativeData",
              "reason": "Fixture accepts missing body", "owner": "test team", "expiry": "2099-01-01"}
 GLOBAL_EXCEPTION = {key: value for key, value in EXCEPTION.items() if key not in {"method", "path"}}
+
+
+def test_evidence_redacts_each_configured_auth_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_MITIGATION_BEARER_TOKEN", "main-secret-token")
+    monkeypatch.setenv("API_MITIGATION_LOGOUT_TOKEN", "logout-secret-token")
+    monkeypatch.setenv("API_MITIGATION_EMPTY_TOKEN", "")
+    path = tmp_path / "events.ndjson"
+    path.write_text("main-secret-token logout-secret-token ordinary text", encoding="utf-8")
+    redact_evidence_tokens([path, tmp_path / "absent"])
+    assert path.read_text(encoding="utf-8") == "[REDACTED] [REDACTED] ordinary text"
+
+
+@pytest.mark.parametrize("status,enabled", [(200, True), (201, True), (204, True), (412, True), (None, True), (403, False)])
+def test_success_response_gate_requires_success_for_each_selected_operation(status, enabled):
+    observations = [{"case_id": "first", "method": "GET", "path": "/first", "response_status": 200,
+                     "checks": [{"status": "success"}]},
+                    {"case_id": "second", "method": "GET", "path": "/second", "response_status": status,
+                     "checks": [{"status": "success"}]}]
+    verdict, _ = assess({"require_success_responses": enabled},
+                        {"complete": True, "stop_reason": "completed", "operations": {"tested": 2}},
+                        {"tracecov_version": "test", "operations": []}, observations,
+                        [{"operation": "GET /first", "status": "success"}],
+                        {("GET", "/first"), ("GET", "/second")}, 0)
+    missing = "No successful response observed: GET /second"
+    assert (missing in verdict["issues"]) == (enabled and status not in (200, 201, 204))
+    assert verdict["passed"] == (status in (200, 201, 204) or not enabled)
 
 
 def auth_event(child_count=1):
@@ -31,6 +58,30 @@ def auth_event(child_count=1):
     return {"ScenarioFinished": {"phase": "fuzzing", "status": "success", "recorder": {
         "label": "GET /items", "cases": cases, "interactions": interactions,
         "checks": {"parent": [{"name": "ignored_auth", "status": "success"}]}}}}
+
+
+@pytest.mark.parametrize("probe,failed", [(True, False), (True, True), (False, False)])
+def test_unsupported_method_probes_belong_to_their_source_operation(tmp_path, probe, failed):
+    event = auth_event(0)
+    scenario = event["ScenarioFinished"]
+    scenario["phase"] = "coverage"
+    value = scenario["recorder"]["cases"]["parent"]["value"]
+    value["method"] = "TRACE"
+    value["meta"] = {"phase": {"data": {"scenario": "unspecified_http_method" if probe else "other"}}}
+    interaction = scenario["recorder"]["interactions"]["parent"]
+    interaction["request"] = {"method": "TRACE", "uri": "http://test/items"}
+    interaction["response"]["status_code"] = 200 if failed else 405
+    scenario["recorder"]["checks"]["parent"] = [{"name": "unsupported_method", "status": "failure" if failed else "success"}]
+    if failed:
+        scenario["recorder"]["checks"]["parent"][0]["failure_info"] = {"failure": {"type": "UnsupportedMethodResponse"}}
+    path = tmp_path / "events.ndjson"
+    path.write_text(json.dumps(event), encoding="utf-8")
+    observations, scenarios = parse_events(path)
+    verdict, _ = assess({}, {"complete": True, "stop_reason": "completed", "operations": {"tested": 1}},
+                        {"tracecov_version": "test", "operations": []}, observations, scenarios, {("GET", "/items")}, int(failed))
+    assert observations[0]["request"]["method"] == "TRACE"
+    assert observations[0]["method"] == ("GET" if probe else "TRACE")
+    assert verdict["passed"] == (probe and not failed)
 
 
 @pytest.mark.parametrize("problem", [None, "forbidden", "missing_parent", "self_parent", "other_operation",
@@ -198,6 +249,58 @@ def test_passed_operations_require_complete_successful_evidence(problem):
     verdict, _ = assess({}, report, coverage, observations, scenarios, expected, 0)
     assert verdict["operations"] == {"schema": 3, "tested": 2, "passed": 2 if problem is None else 1,
                                      "skipped": ["GET /untested"]}
+
+
+@pytest.mark.parametrize("phase,accepted", [("stateful", True), ("stateful", False), ("fuzzing", True)])
+def test_stateful_summary_failures_require_stateful_event_evidence(phase, accepted):
+    observation = {"case_id": "bad", "method": "POST", "path": "/items", "phase": phase,
+                   "response_status": 200, "checks": [{"status": "failure", "failure_info": {
+                       "failure": {"type": "AcceptedNegativeData"}}}]}
+    config = {"check_exceptions": [EXCEPTION]} if accepted else {}
+    verdict, _ = assess(config, {"complete": True, "stop_reason": "completed", "operations": {"tested": 1},
+                                "failures": [{"type": "AcceptedNegativeData", "operations": ["Stateful tests"]}]},
+                        {"tracecov_version": "test", "operations": []}, [observation],
+                        [{"operation": "Stateful tests", "phase": phase, "status": "failure"}],
+                        {("POST", "/items")}, 1)
+    assert verdict["passed"] == (phase == "stateful" and accepted)
+    assert ("Verdict contains failures missing from event evidence" in verdict["issues"]) == (phase != "stateful")
+    assert verdict["checks"]["failed"] == 1
+
+
+@pytest.mark.parametrize("problem", [None, "empty", "unsupported_check", "no_reason", "bad_code", "duplicate"])
+def test_operation_check_statuses_are_validated(tmp_path, problem):
+    override = {"method": "PUT", "path": "/items/{id}", "check": "missing_required_header",
+                "expected_statuses": ["400", "428"], "reason": "ETag preconditions use HTTP 428"}
+    config = {"schema": "schema.yaml", "base_url": "http://example.test", "component_version": "test",
+              "configuration_id": "test", "check_statuses": [override]}
+    if problem == "empty":
+        override["expected_statuses"] = []
+    elif problem == "unsupported_check":
+        override["check"] = "response_schema_conformance"
+    elif problem == "no_reason":
+        override["reason"] = " "
+    elif problem == "bad_code":
+        override["expected_statuses"] = ["oops"]
+    elif problem == "duplicate":
+        config["check_statuses"].append(override.copy())
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    if problem:
+        with pytest.raises(ValueError):
+            read_config(path)
+    else:
+        assert read_config(path)[0]["check_statuses"] == [override]
+
+
+def test_documented_server_status_expectations_are_supported(tmp_path):
+    override = {"method": "GET", "path": "/health", "check": "not_a_server_error",
+                "expected_statuses": ["1xx", "2xx", "3xx", "4xx", "503"],
+                "reason": "The isolated dependency-outage scenario expects documented HTTP 503"}
+    config = {"schema": "schema.yaml", "base_url": "http://example.test", "component_version": "test",
+              "configuration_id": "dependency-outage", "check_statuses": [override]}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    assert read_config(path)[0]["check_statuses"] == [override]
 
 
 @pytest.mark.parametrize("passed", [True, False])
@@ -397,6 +500,31 @@ def run(tmp_path, server, *, fmt="json", local=False, exceptions=None, threshold
     proc = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
     dirs = [p for p in (tmp_path / "out").iterdir() if p.is_dir()] if (tmp_path / "out").exists() else []
     return proc, (dirs[0] if dirs else None)
+
+
+@pytest.mark.parametrize("include_unconfigured", [False, True])
+def test_check_statuses_apply_only_to_the_configured_operation(tmp_path, server, include_unconfigured):
+    schema = {"openapi": "3.0.3", "info": {"title": "Preconditions", "version": "1"}, "paths": {
+        "/preconditions": {"get": {"parameters": [{"name": "If-Match", "in": "header", "required": True,
+                                                   "schema": {"type": "string", "minLength": 1}}],
+                                   "responses": {str(code): {"description": "result"} for code in (200, 412, 428)}}}}}
+    if include_unconfigured:
+        schema["paths"]["/unconfigured"] = {"get": {"responses": {
+            "200": {"description": "ok"}, "412": {"description": "unexpected precondition"}}}}
+    statuses = [{"method": "GET", "path": "/preconditions", "check": check, "reason": "ETag semantics",
+                 "expected_statuses": codes} for check, codes in (
+                     ("positive_data_acceptance", ["2xx", "401", "403", "404", "409", "412", "429", "5xx"]),
+                     ("missing_required_header", ["400", "401", "403", "406", "415", "422", "428"]))]
+    proc, out = run(tmp_path, server, local=True, schema=schema, exceptions=[],
+                    thresholds={"check_statuses": statuses, "test_operations": [
+                        {"method": "GET", "path": path} for path in schema["paths"]]})
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert proc.returncode == int(include_unconfigured), proc.stdout + proc.stderr
+    assert verdict["passed"] == (not include_unconfigured)
+    assert not any(failure["path"] == "/preconditions" for failure in verdict["observed_failures"])
+    if include_unconfigured:
+        assert any(failure["path"] == "/unconfigured" and failure["failure_type"] == "RejectedPositiveData"
+                   for failure in verdict["observed_failures"])
 
 
 @pytest.mark.parametrize("fmt,local", [("json", False), ("yaml", True)])

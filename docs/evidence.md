@@ -52,7 +52,35 @@ The per-build SQLite database records build/component/config/schema identity and
 
 The console places `Cases` between `Operations` and `Checks`, showing generated, executed, and not-executed counts, parent-verified cases when present, and failed cases only when nonzero. The HTML Cases card shows generated cases with separate executed and not-executed counts. A case with one or more failed checks counts once, including checks accepted by an exception, matching the check failure totals. The verdict records this count in `cases.failed`.
 
+## Combined scenarios
+
+The report displays documented response coverage and an expandable list of
+method/path/status variants without native TraceCov hits. A combined view takes
+the union of recorded variants, rather than averaging scenario percentages.
+For missing 405 coverage, the list identifies successful unsupported-method
+probes on the same URL without adding those probes to the native coverage count.
+
+For one test invocation split into multiple scenarios (for example, an
+administrator run, admission failures and session logout), rebuild its single
+cohort directory with `report --input-dir <cohort> --combine-runs`. The report
+opens with all operations together, deduplicated by HTTP method and path. Case
+and check counts are summed; every case retains its source configuration and
+run. One failed scenario makes the combined result fail. Individual scenarios
+remain selectable for diagnosis and provenance. Their original verdicts and
+TraceCov files remain unchanged; coverage percentages are never averaged.
+
+Use this option only for scenarios belonging to the same test invocation, not a
+directory of historical runs. Different API targets or component versions and
+unreadable evidence are rejected rather than producing a partial combined view.
+
 ## Glossary
+
+Unsupported-method coverage probes are attributed to their originating schema
+operation. For example, a TRACE probe generated for `GET /orders` belongs to that
+GET operation; its retained HTTP request still records `TRACE`. Such probes do
+not invent additional schema operations, and their check failures still block
+the owning operation. This mapping applies only to explicitly identified
+`unspecified_http_method` coverage cases with a matching source path.
 
 - **Operation:** An HTTP method and schema path, such as `POST /orders`.
 - **Case:** A generated request definition for an operation, which may have execution evidence or remain unexecuted.

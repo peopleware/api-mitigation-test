@@ -1,0 +1,36 @@
+services:
+  fixture:
+    image: python:3.13.12-slim
+    command: [python, /fixture/server.py]
+    environment:
+      FIXTURE_BROKEN: ${FIXTURE_BROKEN:-false}
+    volumes:
+      - ./fixture-server.py:/fixture/server.py:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  runner:
+    image: ${API_MITIGATION_IMAGE:?Select the runner image explicitly}
+    profiles: [check]
+    working_dir: /workspace
+    command: [--config, runner-check.yaml]
+    environment:
+      API_MITIGATION_BUILD_ID: ${API_MITIGATION_BUILD_ID:?Set a unique verification build ID}
+      API_MITIGATION_OUTPUT_DIR: /evidence
+      # An opaque fixture credential, not a deployment secret.
+      API_MITIGATION_BEARER_TOKEN: runner-fixture-token
+    volumes:
+      - .:/workspace:ro
+      - ../../artifacts/mitigation-runner:/evidence
+      # Preserve Schemathesis negative-authentication probes.
+      - ./hooks.py:/app/hooks.py:ro
+    depends_on:
+      fixture:
+        condition: service_healthy
+
+networks:
+  default:
+    internal: true
