@@ -211,6 +211,9 @@ h1 { font-size: clamp(20px,2vw,26px); letter-spacing: -.035em; font-weight: 650;
 .history-table .pill { margin-left: 6px; }
 .numeric { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace,Consolas,monospace; }
 .failure-number { color: var(--red); }
+.failure-types-panel { padding: 0; overflow: hidden; }
+.failure-types-chart { margin: 0 18px 12px; }
+.failure-types-description { padding: 0 18px 12px; font-size: 12px; }
 .failure-type-filter { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
 .failure-type-filter span { margin-right: 12px; overflow-wrap: anywhere; }
 .run-context > summary { display: none; }

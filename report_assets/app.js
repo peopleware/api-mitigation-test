@@ -488,7 +488,15 @@ function passedChange(current, previous) {
   return { symbol: delta > 0 ? '▲' : '▼', kind: delta > 0 ? 'up' : 'down',
     description: 'Passed or accepted ratio ' + (delta > 0 ? 'increased' : 'decreased') + ' by ' + difference + ' percentage points vs previous run' };
 }
-function chart(runs, series, label) {
+function chart(runs, series, label, { stacked = false } = {}) {
+  function openSegment(index, datasetIndex) {
+    if (!stacked || !series[datasetIndex]?.values[index]) return;
+    showView('report');
+    selectRun(DATA.runs.indexOf(runs[index]));
+    state.failureType = series[datasetIndex].label;
+    renderFilters(); renderOperations();
+    $('failure-type-filter').querySelectorAll('button')[0].focus();
+  }
   const dates = runs.map(run => {
     const date = new Date(run.started_at);
     return !run.started_at || Number.isNaN(date.getTime()) ? 'Unknown date' :
@@ -500,6 +508,10 @@ function chart(runs, series, label) {
     seenDates.add(date);
   });
   const container = node('div', 'trend-chart-container');
+  if (stacked) {
+    container.classList.toggle('failure-types-chart');
+    container.style.height = (280 + Math.ceil(series.length / 3) * 24) + 'px';
+  }
   const canvas = node('canvas', 'trend-chart');
   canvas.setAttribute('role', 'img');
   canvas.setAttribute('aria-label', label + ', oldest to newest: ' + runs.map((run, i) => run.build_number + ': ' + series.map(item => item.label + ' ' + item.values[i]).join(', ')).join(', '));
@@ -516,11 +528,13 @@ function chart(runs, series, label) {
     const timestamp = node('time', 'trend-tooltip-date', tooltipDate(run.started_at));
     timestamp.dateTime = run.started_at || '';
     tooltip.replaceChildren(heading, timestamp);
-    for (const item of series) {
+    const tooltipSeries = stacked ? [series[model.dataPoints[0].datasetIndex]] : series;
+    for (const item of tooltipSeries) {
       const row = node('div', 'trend-tooltip-series'), marker = node('span', 'trend-tooltip-marker');
       marker.style.backgroundColor = item.color;
       marker.setAttribute('aria-hidden', 'true');
-      row.append(marker, node('span', '', item.label + ': ' + item.values[index]));
+      row.append(marker, node('span', '', item.label + ': ' + item.values[index] +
+        (item.accepted ? (item.values[index] === 1 ? ' occurrence (' : ' occurrences (') + item.accepted[index] + ' accepted)' : '')));
       tooltip.append(row);
     }
     tooltip.append(node('div', 'trend-tooltip-stats', operationCounts(run).observed + ' operations · ' +
@@ -532,31 +546,33 @@ function chart(runs, series, label) {
     tooltip.style.top = Math.max(0, Math.min(model.caretY - tooltip.offsetHeight / 2, instance.height - tooltip.offsetHeight)) + 'px';
   };
   const instance = new Chart(canvas, {
-    type: 'line',
+    type: stacked ? 'bar' : 'line',
     data: {
       labels: dates,
       datasets: series.map(item => ({ label: item.label, data: item.values,
         borderColor: item.color, backgroundColor: item.color, borderDash: item.dash || [],
-        borderWidth: 3, pointRadius: 2, pointBorderWidth: 1,
+        borderWidth: stacked ? 1 : 3, pointRadius: 2, pointBorderWidth: 1,
         pointHoverRadius: 4, pointHoverBorderWidth: 1, fill: false,
         tension: 0.4, cubicInterpolationMode: 'default' })),
     },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
       onResize: () => { tooltip.hidden = true; },
-      interaction: { mode: 'index', intersect: false, axis: 'x' },
+      onClick: (_event, elements) => { if (elements.length) openSegment(elements[0].index, elements[0].datasetIndex); },
+      onHover: (_event, elements) => { canvas.style.cursor = stacked && elements.length ? 'pointer' : 'default'; },
+      interaction: stacked ? { mode: 'nearest', intersect: true, axis: 'xy' } : { mode: 'index', intersect: false, axis: 'x' },
       plugins: { legend: { display: series.length > 1, position: 'bottom',
-        labels: { color: '#a1aab8', usePointStyle: true, pointStyle: 'line', boxWidth: 24, padding: 12, font: { size: 11 } } },
+        labels: { color: '#a1aab8', usePointStyle: true, pointStyle: stacked ? 'rect' : 'line', boxWidth: 24, padding: 12, font: { size: 11 } } },
         tooltip: { enabled: false, external: externalTooltip } },
       scales: {
-        x: { grid: { display: false }, border: { color: '#414b58' },
+        x: { stacked, grid: { display: false }, border: { color: '#414b58' },
           ticks: { color: '#a1aab8', maxRotation: 0, autoSkip: true, maxTicksLimit: 4, font: { size: 10 },
             callback: value => dateTicks.has(value) ? dates[value] : null } },
-        y: { beginAtZero: true, border: { display: false }, grid: { color: '#414b58' },
+        y: { stacked, beginAtZero: true, border: { display: false }, grid: { color: '#414b58' },
           ticks: { color: '#a1aab8', precision: 0, maxTicksLimit: 4, font: { size: 10 } } },
       },
     },
-    plugins: [{
+    plugins: stacked ? [] : [{
       id: 'runGuide',
       afterDatasetsDraw(instance) {
         const active = instance.getActiveElements()[0];
@@ -570,15 +586,22 @@ function chart(runs, series, label) {
   });
   trendCharts.add(instance);
   let focusedIndex = -1;
+  let focusedSeries = 0;
   canvas.addEventListener('keydown', event => {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return;
+    if (stacked && event.key === 'Enter') { event.preventDefault(); const active = instance.getActiveElements()[0]; if (active) openSegment(active.index, active.datasetIndex); return; }
+    const segmentKey = stacked && ['ArrowUp', 'ArrowDown'].includes(event.key);
+    if (!segmentKey && !['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return;
     event.preventDefault();
     if (event.key === 'Escape') { hideTooltip(); return; }
-    focusedIndex = event.key === 'Home' ? 0 : event.key === 'End' ? runs.length - 1 :
+    focusedIndex = segmentKey ? Math.max(0, focusedIndex) : event.key === 'Home' ? 0 : event.key === 'End' ? runs.length - 1 :
       Math.max(0, Math.min(runs.length - 1, focusedIndex + (event.key === 'ArrowLeft' ? -1 : 1)));
-    const active = series.map((_, datasetIndex) => ({ datasetIndex, index: focusedIndex }))
+    let active = series.map((_, datasetIndex) => ({ datasetIndex, index: focusedIndex }))
       .filter(item => instance.isDatasetVisible(item.datasetIndex));
     if (!active.length) { hideTooltip(); return; }
+    if (stacked) {
+      focusedSeries = Math.max(0, Math.min(active.length - 1, focusedSeries + (segmentKey ? (event.key === 'ArrowUp' ? 1 : -1) : 0)));
+      active = [active[focusedSeries]];
+    }
     const point = instance.getDatasetMeta(active[0].datasetIndex).data[focusedIndex];
     instance.setActiveElements(active);
     instance.tooltip.setActiveElements(active, { x: point.x, y: point.y });
@@ -593,6 +616,38 @@ function chart(runs, series, label) {
   }
   canvas.addEventListener('blur', hideTooltip);
   return container;
+}
+function failureTypeBreakdown(runs) {
+  const counts = runs.map(run => {
+    const types = new Map();
+    for (const operation of run.operations) for (const testCase of operation.cases) for (const check of testCase.checks) {
+      if (check.status !== 'failure') continue;
+      const type = failureType(check);
+      const count = types.get(type) || { total: 0, accepted: 0 };
+      count.total++;
+      if (check.exception) count.accepted++;
+      types.set(type, count);
+    }
+    return types;
+  });
+  const types = [...new Set(counts.flatMap(count => [...count.keys()]))].sort();
+  const panel = node('section', 'panel failure-types-panel');
+  const heading = node('div', 'history-heading');
+  heading.append(node('h3', '', 'Failure types per run'));
+  panel.append(heading);
+  if (!types.length) {
+    panel.append(node('p', 'failure-types-description muted', 'No failed checks recorded for these runs.'));
+    return panel;
+  }
+  panel.append(node('p', 'failure-types-description muted',
+    'One bar per run, oldest to newest; each segment counts a failure type, including accepted failures. Hover for counts; click a segment to inspect matching failures. Select a legend item to toggle a type.'));
+  const series = types.map((type, index) => {
+    return { label: type, color: 'hsl(' + Math.round((210 + index * 137.508) % 360) + ', 65%, 68%)',
+      values: counts.map(count => count.get(type)?.total || 0),
+      accepted: counts.map(count => count.get(type)?.accepted || 0) };
+  });
+  panel.append(chart(runs, series, 'Failure types per run', { stacked: true }));
+  return panel;
 }
 function renderTrends() {
   const groups = trendGroups(), select = $('trend-group'), previous = select.value;
@@ -638,6 +693,7 @@ function renderTrends() {
     panel.append(heading,chart(runs,series,title)); grid.append(panel);
   }
   root.append(grid);
+  root.append(failureTypeBreakdown(runs));
   const history = node('section','panel history-panel');
   const heading = node('div','history-heading'); heading.append(node('h3','','Run history'),node('span','muted','Select a run to inspect its operations')); history.append(heading);
   const table = node('table','history-table');

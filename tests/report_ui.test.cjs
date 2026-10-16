@@ -70,6 +70,7 @@ class ChartAdapter {
   getDatasetMeta() { return { data: this.config.data.datasets[0].data.map((_, i) => ({ x: i * 20, y: 40 })) }; }
   isDatasetVisible() { return true; }
   setActiveElements(active) { this.active = active; }
+  getActiveElements() { return this.active; }
   update() {}
 }
 const context = { document, Chart: ChartAdapter, matchMedia: () => ({ matches: false, addEventListener() {} }) };
@@ -184,8 +185,57 @@ assert.equal(get('selected-run').textContent, 'older');
 get('tab-trends').onclick();
 assert.equal(get('report').hidden, true);
 assert.equal(get('trends').hidden, false);
-assert.equal(get('trend-content').querySelectorAll('canvas').length, 2);
+assert.equal(get('trend-content').querySelectorAll('canvas').length, 3);
+const originalTrendInstances = ChartAdapter.instances.slice(-3);
+const failureChart = originalTrendInstances[2].config;
+assert.equal(failureChart.type, 'bar');
+assert.equal(failureChart.plugins.length, 0);
+assert.equal(failureChart.options.scales.x.stacked, true);
+assert.equal(failureChart.options.scales.y.stacked, true);
+assert.deepEqual(Array.from(failureChart.data.labels), ['1 Jan 2026', '1 Feb 2026']);
+assert.equal(failureChart.options.scales.x.ticks.callback(1), '1 Feb 2026');
+assert.equal(failureChart.options.interaction.mode, 'nearest');
+assert.equal(failureChart.options.interaction.intersect, true);
+assert.equal(failureChart.options.interaction.axis, 'xy');
+assert.deepEqual(Array.from(failureChart.data.datasets[0].data), [0, 1]);
+assert.equal(failureChart.data.datasets[0].label, 'BadResponse');
 assert.equal(get('trend-content').querySelectorAll('.history-table').length, 1);
+assert.equal(get('trend-content').querySelectorAll('.failure-types-table').length, 0);
+const failureRun = (build_number, checks) => ({ build_number, started_at: '2026-01-01T00:00:00+00:00',
+  operations: [{ cases: [{ checks }] }, { cases: [{ checks: [{ status: 'success', failure_type: 'NotAFailure' }] }] }] });
+const failureBreakdown = context.failureTypeBreakdown([
+  failureRun('old', [{ status: 'failure', failure_type: 'AcceptedNegativeData', exception: { reason: 'Allowed' } }]),
+  failureRun('new', [
+    { status: 'failure', failure_type: 'RejectedPositiveData' },
+    { status: 'failure', failure_type: 'AcceptedNegativeData' },
+    { status: 'failure', failure_type: 'AcceptedNegativeData', exception: { reason: 'Allowed' } },
+    { status: 'failure' },
+  ]),
+]);
+const mixedFailureChart = ChartAdapter.instances.at(-1);
+assert.deepEqual(Array.from(mixedFailureChart.config.data.datasets, item => Array.from(item.data)), [[1, 2], [0, 1], [0, 1]]);
+const mixedTooltip = failureBreakdown.querySelectorAll('.trend-tooltip')[0];
+mixedFailureChart.config.options.plugins.tooltip.external({ chart: mixedFailureChart,
+  tooltip: { opacity: 1, dataPoints: [{ dataIndex: 1, datasetIndex: 0 }], caretX: 100, caretY: 90 } });
+assert(mixedTooltip.textContent.includes('AcceptedNegativeData: 2 occurrences (1 accepted)'));
+assert.equal(mixedTooltip.querySelectorAll('.trend-tooltip-series').length, 1);
+assert(!mixedTooltip.textContent.includes('RejectedPositiveData'));
+mixedFailureChart.config.options.plugins.tooltip.external({ chart: mixedFailureChart,
+  tooltip: { opacity: 1, dataPoints: [{ dataIndex: 1, datasetIndex: 1 }], caretX: 100, caretY: 90 } });
+assert(mixedTooltip.textContent.includes('RejectedPositiveData: 1 occurrence (0 accepted)'));
+assert(!mixedTooltip.textContent.includes('AcceptedNegativeData'));
+const segmentCanvas = failureBreakdown.querySelectorAll('canvas')[0];
+segmentCanvas.events.keydown[0]({ key: 'End', preventDefault() {} });
+assert.equal(mixedFailureChart.tooltipActive.length, 1);
+assert.equal(mixedFailureChart.tooltipActive[0].index, 1);
+assert.equal(mixedFailureChart.tooltipActive[0].datasetIndex, 0);
+segmentCanvas.events.keydown[0]({ key: 'ArrowUp', preventDefault() {} });
+assert.equal(mixedFailureChart.tooltipActive[0].datasetIndex, 1);
+segmentCanvas.events.keydown[0]({ key: 'ArrowDown', preventDefault() {} });
+assert.equal(mixedFailureChart.tooltipActive[0].datasetIndex, 0);
+mixedFailureChart.destroy();
+assert(context.failureTypeBreakdown([failureRun('pass', [])]).textContent.includes('No failed checks recorded'));
+assert.equal(context.failureTypeBreakdown([failureRun('other-target', [])]).querySelectorAll('table').length, 0);
 const historyTable = get('trend-content').querySelectorAll('.history-table')[0];
 assert.deepEqual(historyTable.querySelectorAll('th').map(cell => cell.textContent),
   ['Run / date', 'Result', 'Operations', 'Unexplained failures', 'Cases']);
@@ -207,7 +257,7 @@ assert(get('trend-content').textContent.includes('vs previous'));
 // Check our Chart.js configuration and rich tooltip; the real canvas
 // renderer and responsive sizing are exercised in a browser.
 const charts = get('trend-content').querySelectorAll('.trend-chart-container');
-const instances = ChartAdapter.instances.slice(-2);
+const instances = originalTrendInstances.slice(0, 2);
 assert.equal(instances[0].config.data.datasets.length, 3);
 assert.equal(instances[0].config.options.plugins.legend.display, true);
 assert.equal(instances[1].config.data.datasets.length, 3);
@@ -285,7 +335,7 @@ get('trend-group').onchange();
 assert(instances.every(instance => instance.destroyed));
 // Removing a focused canvas can emit blur after Chart.js has been destroyed.
 charts[0].querySelectorAll('canvas')[0].events.blur[0]();
-assert.equal(ChartAdapter.instances.filter(instance => !instance.destroyed).length, 2);
+assert.equal(ChartAdapter.instances.filter(instance => !instance.destroyed).length, 3);
 const singleRunChart = context.chart([JSON.parse(elements.get('report-data').textContent).runs[0]], [{ label: 'Observed cases', values: [1], color: '#94bfff' }], 'Observed cases');
 assert.equal(singleRunChart.querySelectorAll('canvas').length, 1);
 assert.equal(ChartAdapter.instances.at(-1).config.data.datasets[0].data.length, 1);
@@ -323,8 +373,7 @@ vm.runInNewContext(`
     { ...navigationOp, path: '/unrelated', cases: [{ ...navigationCase, checks: [{ status: 'success' }] }] }
   ];
 `, context);
-get('failure-type-select').value = 'BadResponse';
-get('failure-type-select').onchange();
+failureChart.options.onClick({}, [{ index: 1, datasetIndex: 0 }]);
 assert.equal(get('trends').hidden, true);
 assert.equal(get('selected-run').textContent, 'newer');
 assert(get('failure-type-filter').textContent.includes('Failure type: BadResponse'));
@@ -346,6 +395,13 @@ assert.deepEqual(get('operations').querySelectorAll('.case-id').map(item => item
 get('failure-type-select').value = '';
 get('failure-type-select').onchange();
 assert.equal(get('operations').querySelectorAll('.operation').length, 2);
+const navigationChart = context.chart(vm.runInNewContext('[DATA.runs[1], DATA.runs[0]]', context),
+  [{ label: 'BadResponse', values: [0, 1], color: '#94bfff' }], 'Failure types', { stacked: true });
+const navigationInstance = ChartAdapter.instances.at(-1);
+navigationInstance.setActiveElements([{ index: 1, datasetIndex: 0 }]);
+navigationChart.querySelectorAll('canvas')[0].events.keydown[0]({ key: 'Enter', preventDefault() {} });
+navigationInstance.destroy();
+assert.equal(get('failure-type-filter').hidden, false);
 get('older-run').onclick();
 assert.equal(get('failure-type-filter').hidden, true);
 assert.equal(get('failure-type-select').disabled, true);
