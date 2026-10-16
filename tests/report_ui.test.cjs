@@ -373,6 +373,40 @@ selectFilter('Incomplete');
 expandEvidence();
 assert.deepEqual(visibleCaseIds(), ['Case missing-checks']);
 
+// Hide only successful unsupported-method probes, retaining actionable evidence
+// and supported operations outside the selected scope.
+const methodProbe = (path, status, exception) => ({
+  ...filterOperation(path, [{ ...statusCase(path, 'coverage', status, exception),
+    checks: [{ name: 'unsupported_method', status, exception }] }]),
+  expected: false,
+});
+context.filterOperations = [
+  methodProbe('/hidden-probe', 'success'),
+  methodProbe('/failed-probe', 'failure'),
+  methodProbe('/accepted-probe', 'failure', { reason: 'allowed' }),
+  { ...methodProbe('/incomplete-probe', 'success'), scenarios: [{ phase: 'coverage', status: 'error' }] },
+  { ...methodProbe('/untested-probe', 'success'), tested: false, cases: [unexecuted] },
+  { ...filterOperation('/supported-outside-scope', [statusCase('supported', 'coverage', 'success')]), expected: false },
+  { ...methodProbe('/mixed-evidence', 'success'), cases: [
+    ...methodProbe('/mixed-evidence', 'success').cases, statusCase('regular', 'fuzzing', 'success')] },
+  { ...methodProbe('/selected', 'success'), expected: true },
+];
+vm.runInNewContext('DATA.runs[0].operations = filterOperations; selectRun(0);', context);
+assert.equal(get('operations').querySelectorAll('.operation').length, 7);
+assert(!get('operations').textContent.includes('/hidden-probe'));
+for (const path of ['failed-probe', 'accepted-probe', 'incomplete-probe', 'untested-probe',
+  'supported-outside-scope', 'mixed-evidence', 'selected']) assert(get('operations').textContent.includes('/' + path));
+assert.equal(get('operation-filters').children[0].attributes['data-count'], '7');
+assert(get('operation-result-count').textContent.includes('1 passing unsupported-method probes hidden'));
+assert.equal(vm.runInNewContext('DATA.runs[0].operations.length', context), 8);
+get('operation-search').value = 'hidden-probe';
+get('operation-search').oninput();
+assert.equal(get('operations').querySelectorAll('.operation').length, 0);
+get('operation-search').value = '';
+selectFilter('Failed');
+assert.equal(get('operations').querySelectorAll('.operation').length, 1);
+assert(get('operations').textContent.includes('/failed-probe'));
+
 // A cohort opens as one report, deduplicating operations while retaining every
 // source case (including repeated case IDs) and every failed source verdict.
 const sourceRuns = JSON.parse(elements.get('report-data').textContent).runs;

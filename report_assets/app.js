@@ -83,6 +83,10 @@ function outcome(cases, tested = true, scenarios = []) {
   return tested && (checks.length || cases.some(item => item.verification)) ? 'pass' : 'untested';
 }
 function statusPill(kind) { return pill(STATUS[kind].label, ['untested', 'not_executed'].includes(kind) ? 'neutral' : kind); }
+function reportOperations(run) {
+  return run.operations.filter(op => op.expected || outcome(op.cases, op.tested, op.scenarios) !== 'pass' ||
+    !op.cases.length || !op.cases.every(item => item.checks.some(check => check.name === 'unsupported_method')));
+}
 function metrics(cases) {
   const checks = checksOf(cases);
   return { cases: cases.length, checks: checks.length, failed: checks.filter(x => x.status === 'failure' && !x.exception).length };
@@ -223,7 +227,7 @@ function renderRun() {
   renderOperations();
 }
 function renderFilters() {
-  const operations = currentRun().operations, root = $('operation-filters');
+  const operations = reportOperations(currentRun()), root = $('operation-filters');
   clear(root);
   for (const [value,label] of [['all','All'],['fail','Failed'],['neutral','Incomplete'],['accepted','Accepted'],['untested','Not tested']]) {
     const count = value === 'all' ? operations.length : operations.filter(op => outcome(op.cases,op.tested,op.scenarios) === value).length;
@@ -238,7 +242,8 @@ function renderFilters() {
 function renderOperations() {
   const root = $('operations'); clear(root);
   const run = currentRun(), query = $('operation-search').value.trim().toLowerCase();
-  const matched = run.operations.filter(op => (state.filter === 'all' || outcome(op.cases,op.tested,op.scenarios) === state.filter) && [op.entity,op.method,op.path,op.summary].join(' ').toLowerCase().includes(query));
+  const operations = reportOperations(run);
+  const matched = operations.filter(op => (state.filter === 'all' || outcome(op.cases,op.tested,op.scenarios) === state.filter) && [op.entity,op.method,op.path,op.summary].join(' ').toLowerCase().includes(query));
   const groups = new Map();
   for (const op of matched) { if (!groups.has(op.entity)) groups.set(op.entity,[]); groups.get(op.entity).push(op); }
   const nav = $('entity-navigation'); clear(nav); nav.append(node('h2','','Entities'));
@@ -256,7 +261,9 @@ function renderOperations() {
   }
   const visible = [...groups].filter(([name]) => !state.entity || state.entity === name).sort((a,b) => a[0].localeCompare(b[0]));
   const count = visible.reduce((sum,[,ops]) => sum + ops.length,0);
-  $('operation-result-count').textContent = count + ' of ' + run.operations.length + ' operations · ' + visible.length + ' entities';
+  const hidden = run.operations.length - operations.length;
+  $('operation-result-count').textContent = count + ' of ' + operations.length + ' operations · ' + visible.length + ' entities' +
+    (hidden ? ' · ' + hidden + ' passing unsupported-method probes hidden' : '');
   for (const [entity,ops] of visible) {
     const details = node('details','entity'); details.open = true;
     const summary = node('summary'), title = node('div','entity-title');
