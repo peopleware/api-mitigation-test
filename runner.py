@@ -145,7 +145,7 @@ def read_config(path: Path) -> tuple[dict, bytes]:
                 or not isinstance(item["path"], str) or not item["path"].startswith("/")
                 or not isinstance(item["reason"], str) or not item["reason"].strip()):
             raise ValueError("Invalid check status operation or reason")
-        if item["check"] not in ("positive_data_acceptance", "negative_data_rejection", "missing_required_header"):
+        if item["check"] not in ("positive_data_acceptance", "negative_data_rejection", "missing_required_header", "not_a_server_error"):
             raise ValueError("Unsupported check status override")
         codes = item["expected_statuses"]
         if not isinstance(codes, list) or not codes or any(

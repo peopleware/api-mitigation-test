@@ -91,9 +91,17 @@ check_statuses:
 ```
 
 Each entry requires all five fields and an exact selected schema operation.
-Supported checks are `positive_data_acceptance`, `negative_data_rejection`, and
-`missing_required_header`. Values replace that check's native expected statuses
+Supported checks are `positive_data_acceptance`, `negative_data_rejection`,
+`missing_required_header`, and `not_a_server_error`. Values replace that check's native expected statuses
 for that operation only; include the default statuses you still expect. Duplicate
 operation/check entries and unknown operations fail configuration validation.
 These settings are recorded in the build configuration and its hash. They do not
 disable checks, accept response-schema violations, or create check exceptions.
+
+For an isolated dependency-outage scenario, `not_a_server_error` can explicitly
+expect `['1xx', '2xx', '3xx', '4xx', '503']` on the selected health operation.
+That operation still rejects unexpected 500/502 responses and validates the
+documented 503 response schema. Keep this expectation in the outage scenario;
+normal scenarios retain their default server-error checks. Configure
+`positive_data_acceptance` for 503 there as well when valid requests should
+observe the unavailable dependency.

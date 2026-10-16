@@ -3,9 +3,10 @@ import pytest
 import requests
 import schemathesis
 
-from schemathesis.checks import CheckContext
+from schemathesis.checks import CheckContext, not_a_server_error
 from schemathesis.config import ChecksConfig
 from schemathesis.core.transport import Response
+from schemathesis.core.failures import ServerError
 from schemathesis.generation import GenerationMode
 from schemathesis.generation.meta import (
     CaseMetadata, ComponentInfo, GenerationInfo, ParameterLocation,
@@ -42,3 +43,27 @@ def test_stateful_numeric_path_checks_the_serialized_value(identifier, invalid):
             negative_data_rejection(context, response, case)
     else:
         negative_data_rejection(context, response, case)
+
+
+@pytest.mark.parametrize("status", [503, 500, 502])
+@pytest.mark.parametrize("outage", [False, True])
+def test_outage_expectation_allows_only_the_explicit_server_status(status, outage):
+    schema = schemathesis.openapi.from_dict({
+        "openapi": "3.0.3", "info": {"title": "Dependency health", "version": "1"},
+        "paths": {"/health": {"get": {"responses": {
+            "200": {"description": "Healthy"}, "503": {"description": "Dependency unavailable"},
+        }}}},
+    })
+    case = schema["/health"]["get"].Case()
+    request = requests.Request("GET", "http://example.test/health").prepare()
+    response = Response(status_code=status, headers={}, content=b"", request=request, elapsed=0, verify=True)
+    config = ChecksConfig.from_dict({"not_a_server_error": {
+        "expected-statuses": ["1xx", "2xx", "3xx", "4xx", "503"],
+    }}) if outage else ChecksConfig()
+    context = CheckContext(override=None, auth=None, headers=None, config=config,
+                           transport_kwargs=None, response_checks=None)
+    if outage and status == 503:
+        not_a_server_error(context, response, case)
+    else:
+        with pytest.raises(ServerError):
+            not_a_server_error(context, response, case)

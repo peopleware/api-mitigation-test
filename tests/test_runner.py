@@ -292,6 +292,17 @@ def test_operation_check_statuses_are_validated(tmp_path, problem):
         assert read_config(path)[0]["check_statuses"] == [override]
 
 
+def test_documented_server_status_expectations_are_supported(tmp_path):
+    override = {"method": "GET", "path": "/health", "check": "not_a_server_error",
+                "expected_statuses": ["1xx", "2xx", "3xx", "4xx", "503"],
+                "reason": "The isolated dependency-outage scenario expects documented HTTP 503"}
+    config = {"schema": "schema.yaml", "base_url": "http://example.test", "component_version": "test",
+              "configuration_id": "dependency-outage", "check_statuses": [override]}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    assert read_config(path)[0]["check_statuses"] == [override]
+
+
 @pytest.mark.parametrize("passed", [True, False])
 def test_console_summary_is_compact(passed):
     verdict = {"passed": passed, "issues": [f"Missing check or response evidence for {i}" for i in range(2000)],
