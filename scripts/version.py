@@ -12,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_FILE = ROOT / "package.json"
+CHANGELOG_FILE = ROOT / "CHANGELOG.md"
 IMAGE = "ppwcode/api-mitigation-test"
 IMAGE_REFERENCE = re.compile(
     rf"(?<![\w./-])(?P<prefix>docker://)?{re.escape(IMAGE)}:"
@@ -102,11 +103,44 @@ def update_image_references(contents: str, new_version: str) -> str:
     return IMAGE_REFERENCE.sub(replace, contents)
 
 
+def release_notes(changelog: str, version: str) -> str:
+    """Return the nonempty release section, excluding HTML comments."""
+    changelog = re.sub(r"<!--[\s\S]*?-->", "", changelog)
+    sections = re.split(r"^##[ \t]+", changelog, flags=re.MULTILINE)[1:]
+    matching = []
+    for section in sections:
+        heading, _, body = section.partition("\n")
+        heading = heading.strip()
+        if heading == version or heading.startswith(version + " "):
+            matching.append(body.strip())
+    if len(matching) != 1:
+        raise ValueError(f"CHANGELOG.md must contain exactly one ## {version} section")
+    notes = matching[0]
+    if not any(line.strip() and not line.lstrip().startswith("#") for line in notes.splitlines()):
+        raise ValueError(f"CHANGELOG.md must describe the changes for {version}")
+    return notes + "\n"
+
+
+def prepare_changelog(changelog: str, new_version: str) -> str:
+    heading = r"^##[ \t]+Unreleased[ \t]*\r?$"
+    count = len(re.findall(heading, changelog, flags=re.MULTILINE))
+    if count > 1:
+        raise ValueError("CHANGELOG.md contains multiple ## Unreleased sections")
+    if count:
+        if re.search(rf"^##[ \t]+{re.escape(new_version)}(?:[ \t]|\r?$)", changelog, re.MULTILINE):
+            raise ValueError(f"CHANGELOG.md already contains a ## {new_version} section")
+        changelog = re.sub(heading, f"## {new_version}", changelog, flags=re.MULTILINE)
+    release_notes(changelog, new_version)
+    return changelog
+
+
 def update_tracked_files(new_version: str) -> list[str]:
     changed = []
     for filename in git("ls-files", "-z", capture=True).split("\0"):
         if not filename:
             continue
+        if filename == "CHANGELOG.md":
+            continue  # Preserve historical image references in release notes.
         path = ROOT / filename
         if path.is_symlink() or not path.is_file():
             continue
@@ -157,7 +191,14 @@ def main() -> int:
         print(f"Tag {new_tag} already exists.", file=sys.stderr)
         return 2
 
+    try:
+        changelog = prepare_changelog(CHANGELOG_FILE.read_text(encoding="utf-8"), new_version)
+    except (OSError, ValueError) as error:
+        print(error, file=sys.stderr)
+        return 2
+
     changed = update_tracked_files(new_version)
+    CHANGELOG_FILE.write_text(changelog, encoding="utf-8", newline="\n")
     # Reload to preserve any image references updated inside package.json itself.
     package = json.loads(PACKAGE_FILE.read_text(encoding="utf-8"))
     package["version"] = new_version
@@ -165,7 +206,7 @@ def main() -> int:
         json.dumps(package, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8", newline="\n",
     )
-    git("add", "--", "package.json", *changed)
+    git("add", "--", "package.json", "CHANGELOG.md", *changed)
     git("commit", "-m", f"Release {new_version}")
     git("tag", "-a", new_tag, "-m", f"Release {new_version}")
     print(f"Created release commit and tag {new_tag}.")

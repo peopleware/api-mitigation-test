@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -46,6 +47,13 @@ def test_release_discovers_and_commits_tracked_references(tmp_path, pipe_version
     script = tmp_path / "scripts" / "version.py"
     script.parent.mkdir()
     script.write_bytes(Path(version.__file__).read_bytes())
+    check_tag = script.with_name("check_tag.py")
+    check_tag.write_bytes(Path(version.__file__).with_name("check_tag.py").read_bytes())
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        f"# Changelog\n\n## Unreleased\n\n### Features\n\n- New feature.\n\n"
+        f"## 0.2.2\n\n- Use {version.IMAGE}:0.2.2.\n"
+    )
     package = {
         "name": "api-mitigation-test", "version": "0.2.2", "private": True,
         "scripts": {"image": f"docker run {version.IMAGE}:0.1.0"},
@@ -77,12 +85,22 @@ def test_release_discovers_and_commits_tracked_references(tmp_path, pipe_version
     assert ignored.read_text() == f"{version.IMAGE}:0.2.2"
     assert (tmp_path / "binary.dat").read_bytes() == f"\0{version.IMAGE}:0.2.2".encode()
     assert (tmp_path / "non-utf8.txt").read_bytes() == f"{version.IMAGE}:0.2.2".encode() + b"\xff"
-    expected_files = ["docs/new-guide.md", "package.json"]
+    assert "## 0.2.3\n" in changelog.read_text()
+    assert "Unreleased" not in changelog.read_text()
+    assert f"{version.IMAGE}:0.2.2" in changelog.read_text()
+    expected_files = ["CHANGELOG.md", "docs/new-guide.md", "package.json"]
     if pipe_version is not None:
         expected_files.append("pipe.yml")
     assert git("show", "--format=", "--name-only", "HEAD").splitlines() == expected_files
     assert git("tag", "--list") == "v0.2.3"
     assert git("status", "--porcelain") == ""
+
+    notes_file = tmp_path / "release-notes.md"
+    env = dict(os.environ, RELEASE_TAG="v0.2.3", RELEASE_NOTES_FILE=str(notes_file))
+    subprocess.run([sys.executable, str(check_tag)], cwd=tmp_path, env=env, check=True)
+    assert notes_file.read_text() == "### Features\n\n- New feature.\n"
+    env["RELEASE_TAG"] = "v0.2.4"
+    assert subprocess.run([sys.executable, str(check_tag)], cwd=tmp_path, env=env).returncode == 2
 
 
 @pytest.mark.parametrize("current", [
@@ -104,3 +122,58 @@ def test_rejects_missing_or_invalid_package_version(tmp_path, monkeypatch, capsy
         assert not metadata.exists()
     else:
         assert metadata.read_text() == current
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_extracts_only_matching_release_notes(newline):
+    changelog = newline.join([
+        "<!-- License -->", "# Changelog", "## Unreleased", "- Future.",
+        "## 1.2.30", "- Different version.", "## 1.2.3 - 2026-10-16",
+        "### Features", "", "- Released. <!-- internal comment -->",
+        "## 1.2.2", "- Previous.",
+    ])
+    assert version.release_notes(changelog, "1.2.3").replace("\r\n", "\n") == (
+        "### Features\n\n- Released.\n"
+    )
+
+
+@pytest.mark.parametrize("changelog", [
+    "# Changelog\n", "## 1.2.30\n- Wrong version.\n",
+    "## 1.2.3\n### Features\n<!-- TODO -->\n",
+    "## 1.2.3\n- First.\n## 1.2.3\n- Duplicate.\n",
+])
+def test_rejects_missing_empty_or_duplicate_release_notes(changelog):
+    with pytest.raises(ValueError):
+        version.release_notes(changelog, "1.2.3")
+
+
+@pytest.mark.parametrize("changelog", [
+    "## Unreleased\n- First.\n## Unreleased\n- Duplicate.\n",
+    "## Unreleased\n- New.\n## 1.2.3\n- Existing.\n",
+    "## Unreleased\n### Features\n<!-- TODO -->\n",
+])
+def test_rejects_invalid_changelog_promotion(changelog):
+    with pytest.raises(ValueError):
+        version.prepare_changelog(changelog, "1.2.3")
+
+
+def test_accepts_prepared_version_section():
+    changelog = "# Changelog\n\n## 1.2.3\n\n- Prepared notes.\n"
+    assert version.prepare_changelog(changelog, "1.2.3") == changelog
+
+
+def test_invalid_changelog_does_not_modify_release_files(tmp_path, monkeypatch):
+    package = tmp_path / "package.json"
+    package.write_text('{"version": "1.0.0"}\n')
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("# Changelog\n\n## Unreleased\n")
+    monkeypatch.setattr(version, "PACKAGE_FILE", package)
+    monkeypatch.setattr(version, "CHANGELOG_FILE", changelog)
+    monkeypatch.setattr(version, "ROOT", tmp_path)
+    monkeypatch.setattr(version, "git", lambda *args, **kwargs: "")
+    monkeypatch.setattr(sys, "argv", ["scripts/version.py", "patch"])
+    monkeypatch.setattr(version, "update_tracked_files", lambda *_: pytest.fail("Unexpected file update"))
+
+    assert version.main() == 2
+    assert package.read_text() == '{"version": "1.0.0"}\n'
+    assert changelog.read_text() == "# Changelog\n\n## Unreleased\n"

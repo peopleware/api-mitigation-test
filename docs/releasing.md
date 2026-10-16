@@ -2,9 +2,21 @@
 
 With npm available and the Python virtual environment activated, `npm run version:bump -- patch` is a shortcut for `python scripts/version.py patch`. It accepts the same version arguments.
 
-The `version` field in the root `package.json` is the source of truth for the current release version. Use `python scripts/version.py <newversion|major|minor|patch|premajor|preminor|prepatch|prerelease>` to update that field and every explicit semantic-version reference to `ppwcode/api-mitigation-test` in Git-tracked UTF-8 text files, then create a version commit and `v<version>` Git tag. This includes references with older pinned versions, including the image in `pipe.yml`. Placeholders, major-only tags, and tags such as `local` are left unchanged. The script requires a clean working tree and stages `package.json` plus only files whose image references changed. GitHub Action major-tag references must be updated separately when changing major versions. Treat config, output, or verdict changes that require consumers to change their setup as breaking changes. Before running it:
+Record changes in the root `CHANGELOG.md` under `## Unreleased`, using subsections
+such as `### Features`, `### Fixes`, and `### Maintenance`. Commit those notes
+before running the version script. The script promotes `## Unreleased` to
+`## <newversion>` and includes the changelog in the release commit. Alternatively,
+prepare the version heading yourself. Missing, empty, or duplicate release
+sections stop the release before files are changed. Historical image references
+in the changelog are preserved.
 
-1. Run the Python suite and a Docker smoke test. Review the reports and SQLite evidence for consistency and token redaction.
+The release workflow checks that the pushed tag exactly matches `v<version>` from
+`package.json`, then extracts only that version's section from `CHANGELOG.md` as
+the GitHub release body. It fails if the section is missing or has no description.
+
+The `version` field in the root `package.json` is the source of truth for the current release version. Use `python scripts/version.py <newversion|major|minor|patch|premajor|preminor|prepatch|prerelease>` to update that field and every explicit semantic-version reference to `ppwcode/api-mitigation-test` in Git-tracked UTF-8 text files outside the changelog, then create a version commit and `v<version>` Git tag. This includes references with older pinned versions, including the image in `pipe.yml`. Placeholders, major-only tags, and tags such as `local` are left unchanged. The script requires a clean working tree and stages `package.json`, `CHANGELOG.md`, and files whose image references changed. GitHub Action major-tag references must be updated separately when changing major versions. Treat config, output, or verdict changes that require consumers to change their setup as breaking changes. Before running it:
+
+1. Review and commit the changelog notes. Run the Python suite and a Docker smoke test. Review the reports and SQLite evidence for consistency and token redaction.
 2. Run the version script on the intended release commit. It creates the exact version tag locally; push the commit and tag to trigger `.github/workflows/release.yml`, which builds and pushes `ppwcode/api-mitigation-test:<major>.<minor>.<patch>` and its Docker major tag.
 3. Verify the published Docker Hub digest and run the released image against the disposable test target. Move the GitHub `v<major>` Action tag to the latest compatible release commit and push it so `peopleware/api-mitigation-test@v<major>` resolves as documented. Coordinate changes to an existing major tag with maintainers and consumers.
 
