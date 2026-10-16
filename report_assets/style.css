@@ -211,11 +211,14 @@ h1 { font-size: clamp(20px,2vw,26px); letter-spacing: -.035em; font-weight: 650;
 .history-table .pill { margin-left: 6px; }
 .numeric { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace,Consolas,monospace; }
 .failure-number { color: var(--red); }
+.failure-type-filter { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+.failure-type-filter span { margin-right: 12px; overflow-wrap: anywhere; }
 .run-context > summary { display: none; }
 .stat { background: none; border: 0; border-radius: 0; padding: 12px 16px; display: grid; align-items: center; justify-content: space-between; gap: 4px 10px; border-right: 1px solid var(--line); grid-template-columns: minmax(0,1fr) auto; align-content: start; }
 .stat-description { font-size: 12px; color: var(--muted); grid-column: 1 / -1; line-height: 1.5; }
-.toolbar { display: grid; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #202327; margin: 8px 0 0; grid-template-columns: minmax(220px,1fr) auto auto; }
+.toolbar { display: grid; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #202327; margin: 8px 0 0; grid-template-columns: minmax(180px,1fr) minmax(180px,240px) auto auto; }
 .toolbar .search { background: var(--bg); }
+.toolbar-failure-type { width: 100%; min-width: 0; min-height: 44px; padding: 8px 12px; background: var(--bg); }
 .toolbar-actions button { font-size: 12px; min-height: 44px; padding: 6px 10px; background: transparent; }
 .compact-case { padding: 10px 12px 12px; }
 .case-checks { margin-bottom: 12px; }

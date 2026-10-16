@@ -47,6 +47,8 @@
       <div class="toolbar">
         <label class="sr-only" for="operation-search">Search operations</label>
         <input id="operation-search" class="search" type="search" placeholder="Search entities, operations or paths…">
+        <label class="sr-only" for="failure-type-select">Filter by failure type</label>
+        <select id="failure-type-select" class="toolbar-failure-type"></select>
         <div id="operation-filters" class="filter-buttons" aria-label="Filter operations by result"></div>
         <div class="toolbar-actions">
           <button id="expand-operations" type="button">Expand operations</button>
@@ -54,6 +56,7 @@
         </div>
       </div>
       <p id="operation-result-count" class="result-count" aria-live="polite"></p>
+      <div id="failure-type-filter" class="failure-type-filter" hidden></div>
       <div class="results-layout"><nav id="entity-navigation" class="entity-nav" aria-label="Filter by entity"></nav><div id="operations"></div></div>
       <details class="notes"><summary>Run provenance</summary><div id="run-provenance" class="metadata"></div></details>
     </section>

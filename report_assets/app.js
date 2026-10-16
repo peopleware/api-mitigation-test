@@ -47,7 +47,10 @@ function combineRuns(runs) {
   return combined;
 }
 DATA.combined = DATA.combine_runs ? combineRuns(DATA.runs) : null;
-const state = { run: DATA.combined ? -1 : 0, filter: 'all', view: 'report', entity: '' };
+const state = { run: DATA.combined ? -1 : 0, filter: 'all', view: 'report', entity: '', failureType: '' };
+const failureType = check => check.failure_type || 'Unknown failure type';
+const matchesFailureType = item => !state.failureType || item.checks.some(check =>
+  check.status === 'failure' && failureType(check) === state.failureType);
 const currentRun = () => state.run === -1 ? DATA.combined : DATA.runs[state.run];
 function documentedResponseCoverage(run) {
   const rows = run.operations.flatMap(op => (op.response_coverage || []).map(response => ({ ...response, method: op.method, path: op.path })));
@@ -114,6 +117,7 @@ function selectRun(index) {
   state.run = index;
   state.entity = '';
   state.filter = 'all';
+  state.failureType = '';
   $('run-search').value = '';
   $('operation-search').value = '';
   $('run-picker').open = false;
@@ -226,6 +230,24 @@ function renderRun() {
   renderOperations();
 }
 function renderFilters() {
+  const select = $('failure-type-select');
+  const types = [...new Set(currentRun().operations.flatMap(op => checksOf(op.cases))
+    .filter(check => check.status === 'failure').map(failureType))].sort();
+  clear(select);
+  for (const type of ['', ...types]) {
+    const option = node('option', '', type || 'All failure types'); option.value = type; select.append(option);
+  }
+  select.value = state.failureType;
+  select.disabled = !types.length;
+  select.onchange = () => { state.failureType = select.value; state.entity = ''; renderFilters(); renderOperations(); };
+  const failureFilter = $('failure-type-filter');
+  clear(failureFilter);
+  failureFilter.hidden = !state.failureType;
+  if (state.failureType) {
+    const reset = node('button', '', 'Clear failure type filter'); reset.type = 'button';
+    reset.onclick = () => { state.failureType = ''; renderFilters(); renderOperations(); };
+    failureFilter.append(node('span', '', 'Failure type: ' + state.failureType), reset);
+  }
   const operations = reportOperations(currentRun()), root = $('operation-filters');
   clear(root);
   for (const [value,label] of [['all','All'],['fail','Failed'],['neutral','Incomplete'],['accepted','Accepted'],['untested','Not tested']]) {
@@ -242,7 +264,8 @@ function renderOperations() {
   const root = $('operations'); clear(root);
   const run = currentRun(), query = $('operation-search').value.trim().toLowerCase();
   const operations = reportOperations(run);
-  const matched = operations.filter(op => (state.filter === 'all' || outcome(op.cases,op.tested,op.scenarios) === state.filter) && [op.entity,op.method,op.path,op.summary].join(' ').toLowerCase().includes(query));
+  const matched = operations.filter(op => (!state.failureType || op.cases.some(matchesFailureType)) &&
+    (state.filter === 'all' || outcome(op.cases,op.tested,op.scenarios) === state.filter) && [op.entity,op.method,op.path,op.summary].join(' ').toLowerCase().includes(query));
   const groups = new Map();
   for (const op of matched) { if (!groups.has(op.entity)) groups.set(op.entity,[]); groups.get(op.entity).push(op); }
   const nav = $('entity-navigation'); clear(nav); nav.append(node('h2','','Entities'));
@@ -280,7 +303,7 @@ function renderOperations() {
   if (!count) {
     const empty = node('div','empty'); empty.append(node('p','','No operations match this search or filter.'));
     const reset = node('button','','Clear search and filters'); reset.type = 'button';
-    reset.onclick = () => { state.entity = ''; state.filter = 'all'; $('operation-search').value = ''; renderFilters(); renderOperations(); $('operation-search').focus(); };
+    reset.onclick = () => { state.entity = ''; state.filter = 'all'; state.failureType = ''; $('operation-search').value = ''; renderFilters(); renderOperations(); $('operation-search').focus(); };
     empty.append(reset); root.append(empty);
   }
 }
@@ -303,6 +326,7 @@ function renderOperation(op) {
   summary.append(icon, method, path, stats, statusPill(kind));
   const details = lazyDetails('operation', summary, () => renderPhases(op));
   details.style.setProperty('--edge', STATUS[kind].edge);
+  if (state.failureType) details.open = true;
   return details;
 }
 function renderPhases(op) {
@@ -314,17 +338,20 @@ function renderPhases(op) {
     const scenarios = op.scenarios.filter(x => (x.phase || 'Unknown') === phase), cases = op.cases.filter(x => (x.phase || 'Unknown') === phase);
     const kind = outcome(cases, cases.length > 0, scenarios);
     if (state.filter !== 'all' && kind !== state.filter) continue;
-    const visibleCases = cases.filter(item => state.filter === 'all' || outcome([item]) === state.filter);
+    const visibleCases = cases.filter(item => matchesFailureType(item) && (state.filter === 'all' || outcome([item]) === state.filter));
+    if (state.failureType && !visibleCases.length) continue;
     const summary = node('summary'), counts = metrics(cases);
     const skipped = !cases.length && scenarios.length && scenarios.every(item => item.status === 'skip');
     summary.append(node('span', 'phase-name', phase), node('span', 'muted', counts.cases + ' cases · ' + counts.checks + ' checks'), skipped ? pill('Skipped') : statusPill(kind));
-    body.append(lazyDetails('phase', summary, () => {
+    const details = lazyDetails('phase', summary, () => {
       const content = node('div', 'phase-body');
-      for (const scenario of scenarios.filter(x => x.status === 'skip')) content.append(node('p', 'notice', (scenario.source ? scenario.source.configuration_id + ' · ' : '') + 'Skipped: ' + (scenario.skip_reason || 'No reason recorded')));
+      for (const scenario of scenarios.filter(x => !state.failureType && x.status === 'skip')) content.append(node('p', 'notice', (scenario.source ? scenario.source.configuration_id + ' · ' : '') + 'Skipped: ' + (scenario.skip_reason || 'No reason recorded')));
       for (const item of visibleCases) content.append(renderCase(item));
       if (!cases.length) content.append(node('p', 'empty', 'No observed cases in this phase.'));
       return content;
-    }));
+    });
+    if (state.failureType) details.open = true;
+    body.append(details);
   }
   if (!phases.length) body.append(node('p', 'empty', 'No phases or cases recorded for this operation.'));
   return body;
@@ -404,7 +431,8 @@ function renderCase(item) {
     else if(item.verification) body.append(node('p','notice','Verified by ' + item.verification.check + ' on parent case ' + item.verification.parent_case_id + '.'));
     else if(!item.checks.length) body.append(node('p','notice','No check results recorded.'));
     const checks = node('section','case-checks'); checks.setAttribute('aria-label','Check results');
-    const passed = item.checks.filter(check=>check.status === 'success'), other = item.checks.filter(check=>check.status !== 'success');
+    const visibleChecks = state.failureType ? item.checks.filter(check => check.status === 'failure' && failureType(check) === state.failureType) : item.checks;
+    const passed = visibleChecks.filter(check=>check.status === 'success'), other = visibleChecks.filter(check=>check.status !== 'success');
     const heading = node('div','check-overview'); heading.append(node('h3','','Checks'));
     const failures = other.filter(check=>check.status==='failure' && !check.exception).length;
     const accepted = other.filter(check=>check.status==='failure' && check.exception).length;

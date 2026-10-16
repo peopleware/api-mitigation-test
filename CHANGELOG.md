@@ -7,6 +7,8 @@
 
 ### Features
 
+- Add failure-type filtering to the report toolbar, including accepted
+  failures and failures without a recorded type.
 - Add `output_mode: essentials` to retain only SQLite evidence and the main HTML
   report after successful report generation.
 - Allow disabling coverage measurement with `coverage_enabled: false` and

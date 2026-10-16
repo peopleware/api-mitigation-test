@@ -305,6 +305,53 @@ assert.equal(get('report').hidden, false);
 assert.equal(get('selected-run').textContent, 'newer');
 
 // Status filters apply at every level, including mixed cases within a phase.
+vm.runInNewContext(`
+  var navigationOriginal = DATA.runs[0].operations;
+  var navigationOp = navigationOriginal[0];
+  var navigationCase = navigationOp.cases[0];
+  DATA.runs[0].operations = [
+    { ...navigationOp, cases: [
+      { ...navigationCase, case_id: 'matching', checks: [
+        { status: 'failure', failure_type: 'BadResponse', name: 'matching-check' },
+        { status: 'failure', failure_type: 'OtherType', name: 'unrelated-check' }
+      ] },
+      { ...navigationCase, case_id: 'accepted-match', checks: [
+        { status: 'failure', failure_type: 'BadResponse', exception: { reason: 'Allowed' } }
+      ] },
+      { ...navigationCase, case_id: 'unrelated', checks: [{ status: 'failure', failure_type: 'OtherType' }] }
+    ] },
+    { ...navigationOp, path: '/unrelated', cases: [{ ...navigationCase, checks: [{ status: 'success' }] }] }
+  ];
+`, context);
+get('failure-type-select').value = 'BadResponse';
+get('failure-type-select').onchange();
+assert.equal(get('trends').hidden, true);
+assert.equal(get('selected-run').textContent, 'newer');
+assert(get('failure-type-filter').textContent.includes('Failure type: BadResponse'));
+assert.equal(get('failure-type-select').value, 'BadResponse');
+assert.equal(get('operations').querySelectorAll('.operation').length, 1);
+assert.deepEqual(get('operations').querySelectorAll('.case-id').map(item => item.textContent), ['Case matching', 'Case accepted-match']);
+const matchingCase = get('operations').querySelectorAll('.case')[0];
+matchingCase.open = true;
+assert(matchingCase.textContent.includes('matching-check'));
+assert(!matchingCase.textContent.includes('unrelated-check'));
+get('failure-type-filter').querySelectorAll('button')[0].onclick();
+assert.equal(get('failure-type-filter').hidden, true);
+assert.equal(get('operations').querySelectorAll('.operation').length, 2);
+assert.equal(get('failure-type-select').value, '');
+assert.deepEqual(get('failure-type-select').children.map(option => option.textContent), ['All failure types', 'BadResponse', 'OtherType']);
+get('failure-type-select').value = 'OtherType';
+get('failure-type-select').onchange();
+assert.deepEqual(get('operations').querySelectorAll('.case-id').map(item => item.textContent), ['Case matching', 'Case unrelated']);
+get('failure-type-select').value = '';
+get('failure-type-select').onchange();
+assert.equal(get('operations').querySelectorAll('.operation').length, 2);
+get('older-run').onclick();
+assert.equal(get('failure-type-filter').hidden, true);
+assert.equal(get('failure-type-select').disabled, true);
+assert.deepEqual(get('failure-type-select').children.map(option => option.textContent), ['All failure types']);
+vm.runInNewContext('DATA.runs[0].operations = navigationOriginal; selectRun(0);', context);
+
 const statusCase = (case_id, phase, status, exception) => ({
   case_id, phase, response_status: 200, checks: [{ name: 'check', status, exception }],
 });

@@ -4,6 +4,8 @@ The build ID is mandatory outside GitHub and Bitbucket. Each run creates `artifa
 
 ## HTML evidence report
 
+The main toolbar provides a failure-type selector listing the failed check types recorded in the current run, including accepted failures and unknown types. It combines with the status, search, and entity filters and narrows operations, cases, and checks to the selected type. Select All failure types or use the active filter's clear button to remove it. The selector is disabled for runs without failed checks. Changing runs resets this filter; summary counts continue to describe the full run, operation, or phase.
+
 For a compact bundle, set `output_mode: essentials`. After successful evidence
 persistence and main report generation, each new build directory contains only
 `evidence.sqlite`, with `report.html` at the output root. This also applies when
