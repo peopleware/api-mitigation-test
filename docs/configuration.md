@@ -35,11 +35,26 @@ check_exceptions:
 
 `stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
 
+`coverage_enabled` defaults to true and must be a boolean. Set it to false to
+disable TraceCov tracking and omit both `coverage.html` and `coverage.json`:
+
+```yaml
+coverage_enabled: false
+```
+
+Remove all `min_*_coverage` settings when disabling coverage; combining them is
+a configuration error, including thresholds of zero. API checks, authentication,
+test generation, verdicts, SQLite evidence, and the main `report.html` remain
+enabled. The console reports coverage as disabled, and the archived verdict
+records this choice. Skipping tracking and coverage reports can reduce runtime;
+the savings depend on the workload. Schemathesis's test generation phase named
+`coverage` still runs; it is independent of TraceCov measurement.
+
 `coverage_html` defaults to true and must be a boolean. Set it to false to skip
 generating the separate TraceCov `coverage.html` file. JSON coverage, coverage
 thresholds, SQLite evidence, and the main `report.html` are still produced and
 processed as usual. The main report omits the TraceCov link when HTML coverage
-is disabled.
+is disabled. This option has no effect when `coverage_enabled` is false.
 
 `require_success_responses` defaults to false. Set it for functional scenarios
 that must exercise each selected operation successfully. An operation with only

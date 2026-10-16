@@ -581,7 +581,7 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local, cove
 
 
 @pytest.mark.parametrize("value", [None, "false", 0, 1, [], {}])
-@pytest.mark.parametrize("option", ["coverage_html"])
+@pytest.mark.parametrize("option", ["coverage_html", "coverage_enabled"])
 def test_coverage_options_require_boolean(tmp_path, value, option):
     config = {"schema": "schema.yaml", "base_url": "http://example.test",
               "component_version": "1", "configuration_id": "test", option: value}
@@ -589,6 +589,47 @@ def test_coverage_options_require_boolean(tmp_path, value, option):
     path.write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match=f"{option} must be a boolean"):
         read_config(path)
+
+
+@pytest.mark.parametrize("dimension", ["operation", "parameters", "keywords", "examples", "responses"])
+def test_disabled_coverage_rejects_thresholds(tmp_path, dimension):
+    config = {"schema": "schema.yaml", "base_url": "http://example.test",
+              "component_version": "1", "configuration_id": "test",
+              "coverage_enabled": False, f"min_{dimension}_coverage": 0}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="Coverage thresholds require coverage_enabled: true"):
+        read_config(path)
+
+
+@pytest.mark.parametrize("unexplained", [False, True])
+def test_disabled_coverage_preserves_api_checks_and_evidence(tmp_path, server, unexplained):
+    from report import load_database
+
+    proc, out = run(tmp_path, server, exceptions=[] if unexplained else [EXCEPTION],
+                    thresholds={"coverage_enabled": False})
+    assert proc.returncode == int(unexplained), proc.stdout + proc.stderr
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert verdict["passed"] == (not unexplained)
+    assert verdict["coverage_enabled"] is False
+    assert verdict["coverage_percent"] == {}
+    assert verdict["checks"]["failed"] > 0
+    if unexplained:
+        assert verdict["checks"]["unexplained"] > 0
+    else:
+        assert verdict["checks"]["accepted"] > 0
+    assert "Coverage:\tDisabled" in proc.stdout
+    assert not (out / "coverage.html").exists()
+    assert not (out / "coverage.json").exists()
+    assert not (out / "events.ndjson").exists()
+    assert (out / "junit.xml").stat().st_size
+    assert (out.parent / "report.html").stat().st_size
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        assert db.execute("SELECT COUNT(*) FROM coverage").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM observation WHERE response_status = 200").fetchone()[0] > 0
+        assert json.loads(db.execute("SELECT verdict_json FROM build").fetchone()[0])["coverage_enabled"] is False
+    assert load_database(out / "evidence.sqlite", out.parent / "report.html")[0]["coverage_href"] is None
+    assert all(b"test-secret" not in path.read_bytes() for path in out.iterdir() if path.is_file())
 
 
 @pytest.mark.parametrize("fmt", ["json", "yaml"])
