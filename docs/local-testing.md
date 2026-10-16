@@ -10,6 +10,22 @@ With Docker running, build from the root of this runner repository:
 docker build -t daviddkppw/api-mitigation-test:local .
 ```
 
+From PowerShell 7, run the repository-owned container smoke test:
+
+```powershell
+./dev/smoke/Test-Runner.ps1 -Image ppwcode/api-mitigation-test:local
+```
+
+This starts an isolated fixture on an internal Docker network, with no published
+ports, database or identity provider. It verifies that a valid authenticated
+response passes and a deliberately invalid response fails with recorded evidence.
+Its authentication provider leaves negative-authentication probes under
+Schemathesis's control. The wrapper removes its containers and network on exit;
+both results remain under `artifacts/mitigation-runner/report.html`.
+This fixture and the runner/report implementation belong to this repository.
+Application-specific environments, tokens, scenarios and seed data belong to
+the consuming API repository.
+
 Switch to the consuming API repository containing your test configuration. Start an isolated target, export a fresh `API_MITIGATION_BEARER_TOKEN` if authentication is required, and run the local image:
 
 ```sh

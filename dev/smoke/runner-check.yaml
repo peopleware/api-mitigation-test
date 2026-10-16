@@ -1,0 +1,9 @@
+schema: ./fixture.api.yaml
+base_url: http://fixture:8080
+component_version: 1.0.0
+configuration_id: runner-infrastructure
+min_operation_coverage: 100
+stateful_max_examples: 2
+test_operations:
+  - method: GET
+    path: /secured

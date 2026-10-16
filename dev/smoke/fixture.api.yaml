@@ -1,0 +1,38 @@
+openapi: 3.1.0
+info:
+  title: Generic mitigation runner fixture
+  version: 1.0.0
+paths:
+  /secured:
+    get:
+      operationId: getFixtureStatus
+      security:
+        - Bearer: []
+      responses:
+        '200':
+          description: Authenticated fixture response
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+                    const: ok
+        '401':
+          description: Missing or invalid fixture credential
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error:
+                    type: string
+components:
+  securitySchemes:
+    Bearer:
+      type: http
+      scheme: bearer
