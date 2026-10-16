@@ -677,6 +677,10 @@ def main() -> int:
         verdict["duration_seconds"] = time.perf_counter() - started
         (build_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
         write_database(build_dir / "evidence.sqlite", identity, expected, observations, scenarios, coverage, verdict, schema)
+        try:
+            events_path.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"Warning: Could not remove processed events.ndjson: {exc}", file=sys.stderr)
         refresh_report(output)
         print(console_summary(verdict, build_dir, coverage, config))
         return 0 if verdict["passed"] else 1

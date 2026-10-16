@@ -70,7 +70,7 @@ check_exceptions:
     expiry: '2026-12-31'
 ```
 
-Providing only one of `method` or `path` is invalid. Global and operation-specific exceptions can coexist; the first unexpired matching entry supplies the recorded exception metadata. Failure types always match exactly, and expired exceptions never match. Original failure details remain in `events.ndjson`, `verdict.json`, and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Exceptions do not bypass coverage thresholds, missing evidence, or execution errors.
+Providing only one of `method` or `path` is invalid. Global and operation-specific exceptions can coexist; the first unexpired matching entry supplies the recorded exception metadata. Failure types always match exactly, and expired exceptions never match. Original failure details remain in `verdict.json` and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Exceptions do not bypass coverage thresholds, missing evidence, or execution errors.
 
 Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Additional identities supplied through `API_MITIGATION_*_TOKEN` variables are redacted as well. Treat reports as sensitive test data because they may contain API payloads.
 

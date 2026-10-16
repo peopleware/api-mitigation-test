@@ -584,7 +584,7 @@ def test_global_exception_preserves_failure_evidence(tmp_path, server, fmt):
         failures = db.execute("SELECT failure_type, exception_json FROM check_result WHERE status = 'failure'").fetchall()
     assert failures
     assert all(kind == "AcceptedNegativeData" and json.loads(exception) == GLOBAL_EXCEPTION for kind, exception in failures)
-    assert "AcceptedNegativeData" in (out / "events.ndjson").read_text()
+    assert not (out / "events.ndjson").exists()
 
 
 def test_unexplained_and_expired_exception_fail(tmp_path, server):
@@ -593,6 +593,7 @@ def test_unexplained_and_expired_exception_fail(tmp_path, server):
     assert "Unexplained" in json.loads((out / "verdict.json").read_text())["issues"][0]
     assert (out / "evidence.sqlite").exists()
     assert (out.parent / "report.html").exists()
+    assert not (out / "events.ndjson").exists()
     with sqlite3.connect(out / "evidence.sqlite") as db:
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
         assert db.execute("SELECT COUNT(*) FROM check_result WHERE status = 'failure' AND exception_json IS NULL").fetchone()[0] >= 1
@@ -621,7 +622,8 @@ def test_zero_operations(tmp_path, server):
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
 
 
-def test_report_generation_warning_preserves_success_exit(tmp_path, server, monkeypatch, capsys):
+@pytest.mark.parametrize("failure_site", ["report", "parse_events", "write_database"])
+def test_processing_failure_retains_events_until_database_written(tmp_path, server, monkeypatch, capsys, failure_site):
     import report
     import runner
 
@@ -637,12 +639,18 @@ def test_report_generation_warning_preserves_success_exit(tmp_path, server, monk
     monkeypatch.setattr(sys, "argv", ["runner.py", "--config", str(config)])
 
     def fail(*args):
-        raise OSError("report disk full")
+        raise OSError("injected processing failure")
 
-    monkeypatch.setattr(report, "generate_report", fail)
-    assert runner.main() == 0
-    assert "Warning: HTML report generation failed: report disk full" in capsys.readouterr().err
-    assert next((tmp_path / "out").glob("*/evidence.sqlite")).exists()
+    if failure_site == "report":
+        monkeypatch.setattr(report, "generate_report", fail)
+    else:
+        monkeypatch.setattr(runner, failure_site, fail)
+    assert runner.main() == (0 if failure_site == "report" else 2)
+    assert "injected processing failure" in capsys.readouterr().err
+    out = next((tmp_path / "out").iterdir())
+    assert (out / "events.ndjson").exists() == (failure_site != "report")
+    if failure_site == "report":
+        assert (out / "evidence.sqlite").exists()
 
 
 @pytest.mark.parametrize("selected", [

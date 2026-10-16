@@ -34,12 +34,15 @@ try {
         $taskRun = @(Get-ChildItem -LiteralPath $taskOutput -Directory |
             Where-Object Name -Like "$taskBuildId-*")
         if ($taskRun.Count -ne 1) { throw "Expected one evidence directory for $taskBuildId." }
-        foreach ($taskFile in @('verdict.json', 'evidence.sqlite', 'schemathesis.json', 'events.ndjson',
+        foreach ($taskFile in @('verdict.json', 'evidence.sqlite', 'schemathesis.json',
                 'junit.xml', 'coverage.json', 'coverage.html', 'console.log')) {
             $taskEvidence = Join-Path $taskRun[0].FullName $taskFile
             if (!(Test-Path -LiteralPath $taskEvidence) -or (Get-Item -LiteralPath $taskEvidence).Length -eq 0) {
                 throw "Missing runner evidence: $taskFile"
             }
+        }
+        if (Test-Path -LiteralPath (Join-Path $taskRun[0].FullName 'events.ndjson')) {
+            throw 'Processed events.ndjson should have been removed.'
         }
         $taskVerdict = Get-Content (Join-Path $taskRun[0].FullName 'verdict.json') -Raw | ConvertFrom-Json
         if ($taskVerdict.passed -ne (!$taskBroken) -or $taskVerdict.operations.tested -ne 1) {
