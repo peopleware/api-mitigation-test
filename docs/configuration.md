@@ -9,6 +9,8 @@ component_version: 2.4.0
 configuration_id: staging-eu
 # Optional: test only GET, HEAD, and OPTIONS operations
 read_only: true
+# Optional: omit the separate TraceCov HTML report to reduce output size
+coverage_html: false
 # Optional: select methods with exact schema paths or path globs
 test_operations:
   - method: GET
@@ -32,6 +34,12 @@ check_exceptions:
 ```
 
 `stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
+
+`coverage_html` defaults to true and must be a boolean. Set it to false to skip
+generating the separate TraceCov `coverage.html` file. JSON coverage, coverage
+thresholds, SQLite evidence, and the main `report.html` are still produced and
+processed as usual. The main report omits the TraceCov link when HTML coverage
+is disabled.
 
 `require_success_responses` defaults to false. Set it for functional scenarios
 that must exercise each selected operation successfully. An operation with only

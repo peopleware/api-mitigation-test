@@ -528,8 +528,12 @@ def test_check_statuses_apply_only_to_the_configured_operation(tmp_path, server,
 
 
 @pytest.mark.parametrize("fmt,local", [("json", False), ("yaml", True)])
-def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
-    proc, out = run(tmp_path, server, fmt=fmt, local=local, thresholds={"min_operation_coverage": 100})
+@pytest.mark.parametrize("coverage_html", [None, True, False])
+def test_config_schema_exception_and_database(tmp_path, server, fmt, local, coverage_html):
+    thresholds = {"min_operation_coverage": 100}
+    if coverage_html is not None:
+        thresholds["coverage_html"] = coverage_html
+    proc, out = run(tmp_path, server, fmt=fmt, local=local, thresholds=thresholds)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     verdict = json.loads((out / "verdict.json").read_text())
     coverage = json.loads((out / "coverage.json").read_text())
@@ -563,7 +567,10 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
     assert verdict["observed_failures"][0]["failure_type"] == "AcceptedNegativeData"
     assert verdict["duration_seconds"] > 0
     assert "Coverage Summary" in proc.stdout and "accepted failures" in proc.stdout
-    assert (out / "junit.xml").stat().st_size and (out / "coverage.html").stat().st_size
+    assert (out / "junit.xml").stat().st_size
+    assert (out / "coverage.html").exists() == (coverage_html is not False)
+    if coverage_html is not False:
+        assert (out / "coverage.html").stat().st_size
     assert (out.parent / "report.html").stat().st_size
     with sqlite3.connect(out / "evidence.sqlite") as db:
         request_json, response_json = db.execute("SELECT request_json, response_json FROM observation WHERE response_status IS NOT NULL LIMIT 1").fetchone()
@@ -571,6 +578,17 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
         assert json.loads(response_json)["status"] is not None
     assert all(b"test-secret" not in path.read_bytes() for path in out.iterdir() if path.is_file())
     assert b"test-secret" not in (out.parent / "report.html").read_bytes()
+
+
+@pytest.mark.parametrize("value", [None, "false", 0, 1, [], {}])
+@pytest.mark.parametrize("option", ["coverage_html"])
+def test_coverage_options_require_boolean(tmp_path, value, option):
+    config = {"schema": "schema.yaml", "base_url": "http://example.test",
+              "component_version": "1", "configuration_id": "test", option: value}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match=f"{option} must be a boolean"):
+        read_config(path)
 
 
 @pytest.mark.parametrize("fmt", ["json", "yaml"])
@@ -603,8 +621,9 @@ def test_unexplained_and_expired_exception_fail(tmp_path, server):
     assert any("Unexplained" in x for x in json.loads((out2 / "verdict.json").read_text())["issues"])
 
 
-def test_thresholds_independent_and_omitted(tmp_path, server):
-    proc, out = run(tmp_path, server, thresholds={"min_parameters_coverage": 100})
+@pytest.mark.parametrize("coverage_html", [True, False])
+def test_thresholds_independent_and_omitted(tmp_path, server, coverage_html):
+    proc, out = run(tmp_path, server, thresholds={"min_parameters_coverage": 100, "coverage_html": coverage_html})
     assert proc.returncode == 1
     assert any("parameters coverage" in issue for issue in json.loads((out / "verdict.json").read_text())["issues"])
     assert (out / "evidence.sqlite").exists()

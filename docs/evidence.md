@@ -28,7 +28,7 @@ For a local Python installation, the equivalent command is:
 python report.py --input-dir archived-evidence --output archived-evidence/report.html
 ```
 
-The command recursively finds files named `evidence.sqlite`. It skips unreadable or unrelated SQLite files with warnings and fails if no readable evidence remains. A report generated from archived SQLite alone works offline; TraceCov links appear only when `coverage.html` is also beside a database. Older databases remain readable, but their HTTP exchanges show as unavailable.
+The command recursively finds files named `evidence.sqlite`. It skips unreadable or unrelated SQLite files with warnings and fails if no readable evidence remains. A report generated from archived SQLite alone works offline; TraceCov links appear only when `coverage.html` is also beside a database. Set `coverage_html: false` in the run configuration to omit this optional companion report and reduce bundle size; JSON coverage and threshold enforcement remain enabled. Older databases remain readable, but their HTTP exchanges show as unavailable.
 
 New databases retain sanitized request and response headers, URL, status, and JSON bodies for each observed case. Sensitive-looking fields are redacted before SQLite insertion; non-JSON and invalid JSON bodies are omitted. A JSON body is stored as at most 64 KiB of sanitized text, with a truncation label when needed. Schemathesis may truncate a large response before the runner receives it, in which case an incomplete JSON body is omitted. Redaction is best effort: custom secrets and failure messages can still contain sensitive data. Apply the same access controls and retention rules to `report.html` as to `evidence.sqlite`.
 

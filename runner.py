@@ -126,7 +126,7 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses", "coverage_html"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
@@ -159,6 +159,8 @@ def read_config(path: Path) -> tuple[dict, bytes]:
         raise ValueError("read_only must be a boolean")
     if "require_success_responses" in value and not isinstance(value["require_success_responses"], bool):
         raise ValueError("require_success_responses must be a boolean")
+    if "coverage_html" in value and not isinstance(value["coverage_html"], bool):
+        raise ValueError("coverage_html must be a boolean")
     if urlparse(value["base_url"]).scheme not in ("http", "https"):
         raise ValueError("base_url must be an HTTP(S) URL")
     for dim in DIMENSIONS:
@@ -620,13 +622,16 @@ def main() -> int:
                 raise ValueError(f"Check status override references an unselected operation: {operation}")
         report_path, events_path, junit_path = (build_dir / name for name in ("schemathesis.json", "events.ndjson", "junit.xml"))
         coverage_path, html_path = build_dir / "coverage.json", build_dir / "coverage.html"
+        coverage_html = config.get("coverage_html", True)
         env = os.environ.copy()
         env.update({"SCHEMATHESIS_HOOKS": "hooks", "PYTHONUTF8": "1", "PYTHONPATH": str(Path(__file__).parent)})
         executable = schemathesis_executable()
         cmd = [executable, "run", schema_location, "--url", config["base_url"],
                "--report-json-path", str(report_path), "--report-ndjson-path", str(events_path),
-               "--report-junit-path", str(junit_path), "--coverage-format", "html,json",
-               "--coverage-report-html-path", str(html_path), "--coverage-report-json-path", str(coverage_path), "--no-color"]
+               "--report-junit-path", str(junit_path), "--coverage-format", "html,json" if coverage_html else "json",
+               "--coverage-report-json-path", str(coverage_path), "--no-color"]
+        if coverage_html:
+            cmd.extend(["--coverage-report-html-path", str(html_path)])
         if config.get("read_only", False):
             cmd.extend(["--exclude-method", "POST", "--exclude-method", "PUT", "--exclude-method", "PATCH", "--exclude-method", "DELETE", "--exclude-method", "TRACE"])
         if "test_operations" in config:
@@ -652,7 +657,7 @@ def main() -> int:
         with (build_dir / "console.log").open("w", encoding="utf-8") as log:
             process = subprocess.run(cmd, env=env, cwd=Path(__file__).parent, stdout=log, stderr=subprocess.STDOUT, check=False)
         redact_evidence_tokens((report_path, events_path, junit_path, coverage_path, html_path, build_dir / "console.log"))
-        evidence_files = (report_path, events_path, junit_path, coverage_path, html_path)
+        evidence_files = (report_path, events_path, junit_path, coverage_path) + ((html_path,) if coverage_html else ())
         missing_evidence = [f"Missing evidence file: {file.name}" for file in evidence_files if not file.is_file() or file.stat().st_size == 0]
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {}
         coverage = json.loads(coverage_path.read_text(encoding="utf-8")) if coverage_path.is_file() else {}
