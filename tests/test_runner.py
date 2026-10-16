@@ -744,7 +744,7 @@ def test_processing_failure_retains_events_until_database_written(tmp_path, serv
         monkeypatch.setattr(runner, failure_site, fail)
     assert runner.main() == (0 if failure_site == "report" else 2)
     assert "injected processing failure" in capsys.readouterr().err
-    out = next((tmp_path / "out").iterdir())
+    out, = (path for path in (tmp_path / "out").iterdir() if path.is_dir())
     assert (out / "events.ndjson").exists() == (failure_site != "report" or output_mode == "essentials")
     if output_mode == "essentials":
         assert (out / "console.log").stat().st_size
