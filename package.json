@@ -1,6 +1,6 @@
 {
   "name": "api-mitigation-test",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "scripts": {
     "test": "python -m pytest -q tests",
