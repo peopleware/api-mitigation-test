@@ -199,6 +199,33 @@ def test_operation_entity_uses_schema_tag_with_legacy_path_fallback(tmp_path):
     assert entity_name({"path": "/api/v2/{id}"}) == "Other operations"
 
 
+@pytest.mark.parametrize("second_tags, expected_category", [
+    (["Inventory", "Secondary"], "Inventory"),
+    (["Orders"], "Items"),
+    ([], "Inventory"),
+])
+def test_unlisted_methods_inherit_only_unambiguous_same_path_tags(tmp_path, second_tags, expected_category):
+    database = make_database(tmp_path / "run", "tagged", "2026-02-01T00:00:00+00:00",
+                             schema={"paths": {"/items": {"get": {"tags": [" Inventory ", "Secondary"]}}}})
+    # Extend archived evidence without changing the writer or requiring the original schema.
+    with sqlite3.connect(database) as db:
+        db.executemany(
+            "INSERT INTO operation (build_id, method, path, expected, tested, tags_json) VALUES (1, ?, ?, ?, 0, ?)",
+            [("POST", "/items", 1, json.dumps(second_tags)),
+             ("DELETE", "/items", 0, "[]"),
+             ("DELETE", "/items/other", 0, "[]")],
+        )
+    original = database.read_bytes()
+    output = tmp_path / "report.html"
+    generate_report(tmp_path, output)
+    operations = {(op["method"], op["path"]): op for op in embedded_data(output)["runs"][0]["operations"]}
+    assert operations[("GET", "/items")]["entity"] == "Inventory"
+    assert operations[("POST", "/items")]["entity"] == (second_tags[0] if second_tags else "Items")
+    assert operations[("DELETE", "/items")]["entity"] == expected_category
+    assert operations[("DELETE", "/items/other")]["entity"] == "Items"
+    assert database.read_bytes() == original
+
+
 def test_report_embeds_offline_chartjs(tmp_path):
     make_database(tmp_path / "run", "offline", "2026-01-01T00:00:00+00:00")
     output = tmp_path / "report.html"

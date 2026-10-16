@@ -38,12 +38,19 @@ def coverage_link(database: Path, output: Path) -> str | None:
     return quote(relative, safe="/.")
 
 
-def entity_name(operation: dict) -> str:
+def operation_tag(operation: dict) -> str | None:
     tags = decode_json(operation.get("tags_json"), [])
     if isinstance(tags, list):
         for tag in tags:
             if isinstance(tag, str) and tag.strip():
                 return tag.strip()
+    return None
+
+
+def entity_name(operation: dict) -> str:
+    tag = operation_tag(operation)
+    if tag:
+        return tag
     for segment in operation["path"].split("/"):
         if not segment or segment.startswith("{") or segment.lower() == "api" or re.fullmatch(r"v\d+(?:\.\d+)*", segment, re.I):
             continue
@@ -63,6 +70,11 @@ def load_database(path: Path, output: Path) -> list[dict]:
         for build in rows(db, "SELECT * FROM build"):
             build_id = build["id"]
             operation_rows = rows(db, "SELECT * FROM operation WHERE build_id = ? ORDER BY method, path", (build_id,))
+            tags_by_path: dict[str, set[str]] = {}
+            for operation in operation_rows:
+                tag = operation_tag(operation)
+                if tag:
+                    tags_by_path.setdefault(operation["path"], set()).add(tag)
             scenario_rows = rows(db, "SELECT * FROM scenario WHERE build_id = ? ORDER BY id", (build_id,))
             observation_rows = rows(db, "SELECT * FROM observation WHERE build_id = ? ORDER BY id", (build_id,))
             check_rows = rows(db, "SELECT c.* FROM check_result c JOIN observation o ON o.id = c.observation_id WHERE o.build_id = ? ORDER BY c.id", (build_id,))
@@ -77,8 +89,12 @@ def load_database(path: Path, output: Path) -> list[dict]:
             by_id = {}
             for operation in operation_rows:
                 coverage = decode_json(operation.get("coverage_json"), {}) or {}
+                entity = entity_name(operation)
+                path_tags = tags_by_path.get(operation["path"], set())
+                if not operation["expected"] and not operation_tag(operation) and len(path_tags) == 1:
+                    entity = next(iter(path_tags))
                 item = {"method": operation["method"], "path": operation["path"],
-                        "entity": entity_name(operation), "summary": operation.get("summary"),
+                        "entity": entity, "summary": operation.get("summary"),
                         "expected": bool(operation["expected"]), "tested": bool(operation["tested"]),
                         "scenarios": [], "cases": [],
                         "response_coverage": [{"status": str(response["status"]), "hits": response.get("hits", 0)}
