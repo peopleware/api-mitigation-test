@@ -23,6 +23,8 @@
 
 ### Maintenance
 
+- Skip standalone test workflow runs for version tag pushes because the release
+  workflow already calls the tests.
 - Remove processed event streams from run output and run issue notices from the
   report overview.
 - Restructure the configuration reference as a man page.
