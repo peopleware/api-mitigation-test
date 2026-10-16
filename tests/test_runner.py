@@ -528,8 +528,12 @@ def test_check_statuses_apply_only_to_the_configured_operation(tmp_path, server,
 
 
 @pytest.mark.parametrize("fmt,local", [("json", False), ("yaml", True)])
-def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
-    proc, out = run(tmp_path, server, fmt=fmt, local=local, thresholds={"min_operation_coverage": 100})
+@pytest.mark.parametrize("coverage_html", [None, True, False])
+def test_config_schema_exception_and_database(tmp_path, server, fmt, local, coverage_html):
+    thresholds = {"min_operation_coverage": 100}
+    if coverage_html is not None:
+        thresholds["coverage_html"] = coverage_html
+    proc, out = run(tmp_path, server, fmt=fmt, local=local, thresholds=thresholds)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     verdict = json.loads((out / "verdict.json").read_text())
     coverage = json.loads((out / "coverage.json").read_text())
@@ -563,7 +567,10 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
     assert verdict["observed_failures"][0]["failure_type"] == "AcceptedNegativeData"
     assert verdict["duration_seconds"] > 0
     assert "Coverage Summary" in proc.stdout and "accepted failures" in proc.stdout
-    assert (out / "junit.xml").stat().st_size and (out / "coverage.html").stat().st_size
+    assert (out / "junit.xml").stat().st_size
+    assert (out / "coverage.html").exists() == (coverage_html is not False)
+    if coverage_html is not False:
+        assert (out / "coverage.html").stat().st_size
     assert (out.parent / "report.html").stat().st_size
     with sqlite3.connect(out / "evidence.sqlite") as db:
         request_json, response_json = db.execute("SELECT request_json, response_json FROM observation WHERE response_status IS NOT NULL LIMIT 1").fetchone()
@@ -571,6 +578,58 @@ def test_config_schema_exception_and_database(tmp_path, server, fmt, local):
         assert json.loads(response_json)["status"] is not None
     assert all(b"test-secret" not in path.read_bytes() for path in out.iterdir() if path.is_file())
     assert b"test-secret" not in (out.parent / "report.html").read_bytes()
+
+
+@pytest.mark.parametrize("value", [None, "false", 0, 1, [], {}])
+@pytest.mark.parametrize("option", ["coverage_html", "coverage_enabled"])
+def test_coverage_options_require_boolean(tmp_path, value, option):
+    config = {"schema": "schema.yaml", "base_url": "http://example.test",
+              "component_version": "1", "configuration_id": "test", option: value}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match=f"{option} must be a boolean"):
+        read_config(path)
+
+
+@pytest.mark.parametrize("dimension", ["operation", "parameters", "keywords", "examples", "responses"])
+def test_disabled_coverage_rejects_thresholds(tmp_path, dimension):
+    config = {"schema": "schema.yaml", "base_url": "http://example.test",
+              "component_version": "1", "configuration_id": "test",
+              "coverage_enabled": False, f"min_{dimension}_coverage": 0}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="Coverage thresholds require coverage_enabled: true"):
+        read_config(path)
+
+
+@pytest.mark.parametrize("unexplained", [False, True])
+def test_disabled_coverage_preserves_api_checks_and_evidence(tmp_path, server, unexplained):
+    from report import load_database
+
+    proc, out = run(tmp_path, server, exceptions=[] if unexplained else [EXCEPTION],
+                    thresholds={"coverage_enabled": False})
+    assert proc.returncode == int(unexplained), proc.stdout + proc.stderr
+    verdict = json.loads((out / "verdict.json").read_text())
+    assert verdict["passed"] == (not unexplained)
+    assert verdict["coverage_enabled"] is False
+    assert verdict["coverage_percent"] == {}
+    assert verdict["checks"]["failed"] > 0
+    if unexplained:
+        assert verdict["checks"]["unexplained"] > 0
+    else:
+        assert verdict["checks"]["accepted"] > 0
+    assert "Coverage:\tDisabled" in proc.stdout
+    assert not (out / "coverage.html").exists()
+    assert not (out / "coverage.json").exists()
+    assert not (out / "events.ndjson").exists()
+    assert (out / "junit.xml").stat().st_size
+    assert (out.parent / "report.html").stat().st_size
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        assert db.execute("SELECT COUNT(*) FROM coverage").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM observation WHERE response_status = 200").fetchone()[0] > 0
+        assert json.loads(db.execute("SELECT verdict_json FROM build").fetchone()[0])["coverage_enabled"] is False
+    assert load_database(out / "evidence.sqlite", out.parent / "report.html")[0]["coverage_href"] is None
+    assert all(b"test-secret" not in path.read_bytes() for path in out.iterdir() if path.is_file())
 
 
 @pytest.mark.parametrize("fmt", ["json", "yaml"])
@@ -584,7 +643,42 @@ def test_global_exception_preserves_failure_evidence(tmp_path, server, fmt):
         failures = db.execute("SELECT failure_type, exception_json FROM check_result WHERE status = 'failure'").fetchall()
     assert failures
     assert all(kind == "AcceptedNegativeData" and json.loads(exception) == GLOBAL_EXCEPTION for kind, exception in failures)
-    assert "AcceptedNegativeData" in (out / "events.ndjson").read_text()
+    assert not (out / "events.ndjson").exists()
+
+
+@pytest.mark.parametrize("value", [None, True, 0, "minimal", [], {}])
+def test_output_mode_rejects_invalid_values(tmp_path, value):
+    config = {"schema": "schema.yaml", "base_url": "http://example.test",
+              "component_version": "1", "configuration_id": "test", "output_mode": value}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="output_mode must be 'full' or 'essentials'"):
+        read_config(path)
+
+
+@pytest.mark.parametrize("coverage_enabled,unexplained", [(True, False), (True, True), (False, False), (False, True)])
+def test_essentials_output_retains_only_database_and_main_report(tmp_path, server, coverage_enabled, unexplained):
+    from report import generate_report, load_database
+
+    settings = {"output_mode": "essentials", "coverage_enabled": coverage_enabled,
+                "test_operations": [{"method": "POST", "path": "/items"}]}
+    if coverage_enabled:
+        settings["min_operation_coverage"] = 0
+    proc, out = run(tmp_path, server, exceptions=[] if unexplained else [EXCEPTION], thresholds=settings)
+    assert proc.returncode == int(unexplained), proc.stdout + proc.stderr
+    assert {path.relative_to(out.parent).as_posix() for path in out.parent.rglob("*") if path.is_file()} == {
+        f"{out.name}/evidence.sqlite", "report.html"}
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        verdict = json.loads(db.execute("SELECT verdict_json FROM build").fetchone()[0])
+        assert verdict["passed"] == (not unexplained)
+        assert verdict["output_mode"] == "essentials"
+        assert verdict["checks"]["failed"] > 0
+        assert (db.execute("SELECT COUNT(*) FROM coverage").fetchone()[0] > 0) == coverage_enabled
+        assert db.execute("SELECT COUNT(*) FROM observation WHERE request_json IS NOT NULL").fetchone()[0] > 0
+    report_path = out.parent / "report.html"
+    assert load_database(out / "evidence.sqlite", report_path)[0]["coverage_href"] is None
+    assert generate_report(out.parent, report_path)[0] == 1
+    assert report_path.stat().st_size
 
 
 def test_unexplained_and_expired_exception_fail(tmp_path, server):
@@ -593,6 +687,7 @@ def test_unexplained_and_expired_exception_fail(tmp_path, server):
     assert "Unexplained" in json.loads((out / "verdict.json").read_text())["issues"][0]
     assert (out / "evidence.sqlite").exists()
     assert (out.parent / "report.html").exists()
+    assert not (out / "events.ndjson").exists()
     with sqlite3.connect(out / "evidence.sqlite") as db:
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
         assert db.execute("SELECT COUNT(*) FROM check_result WHERE status = 'failure' AND exception_json IS NULL").fetchone()[0] >= 1
@@ -602,8 +697,9 @@ def test_unexplained_and_expired_exception_fail(tmp_path, server):
     assert any("Unexplained" in x for x in json.loads((out2 / "verdict.json").read_text())["issues"])
 
 
-def test_thresholds_independent_and_omitted(tmp_path, server):
-    proc, out = run(tmp_path, server, thresholds={"min_parameters_coverage": 100})
+@pytest.mark.parametrize("coverage_html", [True, False])
+def test_thresholds_independent_and_omitted(tmp_path, server, coverage_html):
+    proc, out = run(tmp_path, server, thresholds={"min_parameters_coverage": 100, "coverage_html": coverage_html})
     assert proc.returncode == 1
     assert any("parameters coverage" in issue for issue in json.loads((out / "verdict.json").read_text())["issues"])
     assert (out / "evidence.sqlite").exists()
@@ -621,13 +717,16 @@ def test_zero_operations(tmp_path, server):
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
 
 
-def test_report_generation_warning_preserves_success_exit(tmp_path, server, monkeypatch, capsys):
+@pytest.mark.parametrize("failure_site", ["report", "parse_events", "write_database"])
+@pytest.mark.parametrize("output_mode", ["full", "essentials"])
+def test_processing_failure_retains_events_until_database_written(tmp_path, server, monkeypatch, capsys, failure_site, output_mode):
     import report
     import runner
 
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"schema": f"{server}/openapi.json", "base_url": server,
                                   "component_version": "1.0", "configuration_id": "integration",
+                                  "output_mode": output_mode,
                                   "read_only": True, "test_operations": [{"method": "GET", "path": "/items"}]}), encoding="utf-8")
     monkeypatch.setenv("API_MITIGATION_BUILD_ID", "report-warning")
     monkeypatch.setenv("API_MITIGATION_OUTPUT_DIR", str(tmp_path / "out"))
@@ -637,12 +736,21 @@ def test_report_generation_warning_preserves_success_exit(tmp_path, server, monk
     monkeypatch.setattr(sys, "argv", ["runner.py", "--config", str(config)])
 
     def fail(*args):
-        raise OSError("report disk full")
+        raise OSError("injected processing failure")
 
-    monkeypatch.setattr(report, "generate_report", fail)
-    assert runner.main() == 0
-    assert "Warning: HTML report generation failed: report disk full" in capsys.readouterr().err
-    assert next((tmp_path / "out").glob("*/evidence.sqlite")).exists()
+    if failure_site == "report":
+        monkeypatch.setattr(report, "generate_report", fail)
+    else:
+        monkeypatch.setattr(runner, failure_site, fail)
+    assert runner.main() == (0 if failure_site == "report" else 2)
+    assert "injected processing failure" in capsys.readouterr().err
+    out = next((tmp_path / "out").iterdir())
+    assert (out / "events.ndjson").exists() == (failure_site != "report" or output_mode == "essentials")
+    if output_mode == "essentials":
+        assert (out / "console.log").stat().st_size
+        assert (out / "schemathesis.json").stat().st_size
+    if failure_site == "report":
+        assert (out / "evidence.sqlite").exists()
 
 
 @pytest.mark.parametrize("selected", [

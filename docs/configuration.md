@@ -9,6 +9,8 @@ component_version: 2.4.0
 configuration_id: staging-eu
 # Optional: test only GET, HEAD, and OPTIONS operations
 read_only: true
+# Optional: omit the separate TraceCov HTML report to reduce output size
+coverage_html: false
 # Optional: select methods with exact schema paths or path globs
 test_operations:
   - method: GET
@@ -33,11 +35,52 @@ check_exceptions:
 
 `stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
 
+`coverage_enabled` defaults to true and must be a boolean. Set it to false to
+disable TraceCov tracking and omit both `coverage.html` and `coverage.json`:
+
+```yaml
+coverage_enabled: false
+```
+
+Remove all `min_*_coverage` settings when disabling coverage; combining them is
+a configuration error, including thresholds of zero. API checks, authentication,
+test generation, verdicts, SQLite evidence, and the main `report.html` remain
+enabled. The console reports coverage as disabled, and the archived verdict
+records this choice. Skipping tracking and coverage reports can reduce runtime;
+the savings depend on the workload. Schemathesis's test generation phase named
+`coverage` still runs; it is independent of TraceCov measurement.
+
+`coverage_html` defaults to true and must be a boolean. Set it to false to skip
+generating the separate TraceCov `coverage.html` file. JSON coverage, coverage
+thresholds, SQLite evidence, and the main `report.html` are still produced and
+processed as usual. The main report omits the TraceCov link when HTML coverage
+is disabled. This option has no effect when `coverage_enabled` is false.
+
 `require_success_responses` defaults to false. Set it for functional scenarios
 that must exercise each selected operation successfully. An operation with only
 4xx/5xx results, or no executed response, fails this gate even if other checks
 pass. This does not replace schema or error checks. Leave it false for deliberate
 denial-only scenarios, such as an authenticated identity without application access.
+
+`output_mode` accepts `full` (the default) or `essentials`. To retain only the
+per-run SQLite database and the main HTML report:
+
+```yaml
+output_mode: essentials
+```
+
+The runner writes `evidence.sqlite` in the build directory and `report.html` at
+the output root. Once both are written, it removes intermediate reports, JUnit,
+the console log, the standalone verdict, and generated Schemathesis configuration.
+The verdict, checks, sanitized HTTP exchanges, and any coverage measurements remain
+in SQLite; the main report can be rebuilt from it. The separate TraceCov HTML
+report is not generated, regardless of `coverage_html`. Coverage collection and
+thresholds remain enabled unless `coverage_enabled: false` is also set.
+
+Cleanup applies to passing runs and recorded test failures. If processing or main
+report generation fails, diagnostic files remain. File removal failures emit
+warnings without changing the test exit status. Existing runs under the output
+root are not cleaned up.
 
 `test_operations` is optional. When present, it must be a nonempty list of HTTP methods and exact OpenAPI schema paths or path globs. Methods are case-insensitive; paths are case-sensitive. Patterns match the entire schema path, including literal parameter placeholders such as `{orderId}`, rather than concrete request URLs.
 
@@ -70,7 +113,7 @@ check_exceptions:
     expiry: '2026-12-31'
 ```
 
-Providing only one of `method` or `path` is invalid. Global and operation-specific exceptions can coexist; the first unexpired matching entry supplies the recorded exception metadata. Failure types always match exactly, and expired exceptions never match. Original failure details remain in `events.ndjson`, `verdict.json`, and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Exceptions do not bypass coverage thresholds, missing evidence, or execution errors.
+Providing only one of `method` or `path` is invalid. Global and operation-specific exceptions can coexist; the first unexpired matching entry supplies the recorded exception metadata. Failure types always match exactly, and expired exceptions never match. Original failure details remain in `verdict.json` and `evidence.sqlite`, even when a matching exception makes the failure acceptable. Exceptions do not bypass coverage thresholds, missing evidence, or execution errors.
 
 Set `API_MITIGATION_BEARER_TOKEN` as a CI secret when needed; never put it in the config. The runner replaces its value in generated text evidence. Additional identities supplied through `API_MITIGATION_*_TOKEN` variables are redacted as well. Treat reports as sensitive test data because they may contain API payloads.
 

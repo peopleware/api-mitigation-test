@@ -1,9 +1,11 @@
 import os
 
 import schemathesis
-import tracecov
 
-tracecov.schemathesis.install()
+if os.environ.get("API_MITIGATION_COVERAGE_ENABLED", "true") == "true":
+    import tracecov
+
+    tracecov.schemathesis.install()
 
 
 @schemathesis.hook

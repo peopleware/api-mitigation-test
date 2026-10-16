@@ -126,11 +126,13 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses", "coverage_html", "coverage_enabled", "output_mode"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
         raise ValueError(f"Unknown config keys: {sorted(extra)}")
+    if value.get("output_mode", "full") not in ("full", "essentials"):
+        raise ValueError("output_mode must be 'full' or 'essentials'")
     for name in required:
         if not isinstance(value[name], str) or not value[name].strip():
             raise ValueError(f"{name} must be a nonempty string")
@@ -159,6 +161,12 @@ def read_config(path: Path) -> tuple[dict, bytes]:
         raise ValueError("read_only must be a boolean")
     if "require_success_responses" in value and not isinstance(value["require_success_responses"], bool):
         raise ValueError("require_success_responses must be a boolean")
+    if "coverage_html" in value and not isinstance(value["coverage_html"], bool):
+        raise ValueError("coverage_html must be a boolean")
+    if "coverage_enabled" in value and not isinstance(value["coverage_enabled"], bool):
+        raise ValueError("coverage_enabled must be a boolean")
+    if not value.get("coverage_enabled", True) and any(f"min_{dim}_coverage" in value for dim in DIMENSIONS):
+        raise ValueError("Coverage thresholds require coverage_enabled: true")
     if urlparse(value["base_url"]).scheme not in ("http", "https"):
         raise ValueError("base_url must be an HTTP(S) URL")
     for dim in DIMENSIONS:
@@ -411,7 +419,7 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         issues.append("Schemathesis reported test cases without checks")
     summary = coverage.get("summary") or {}
     percentages = {}
-    for dim in DIMENSIONS:
+    for dim in DIMENSIONS if config.get("coverage_enabled", True) else ():
         name = "operations" if dim == "operation" else dim
         entry = summary.get(name) or {}
         pct = entry.get("percent")
@@ -424,7 +432,7 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
                 issues.append(f"Missing {dim} coverage for configured threshold")
             elif pct < minimum:
                 issues.append(f"{dim} coverage {pct}% below {minimum}%")
-    if coverage.get("tracecov_version") is None or not isinstance(coverage.get("operations"), list):
+    if config.get("coverage_enabled", True) and (coverage.get("tracecov_version") is None or not isinstance(coverage.get("operations"), list)):
         issues.append("Invalid TraceCov coverage report")
     if process_code not in (0, 1):
         issues.append(f"Schemathesis exited with code {process_code}")
@@ -439,6 +447,8 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
         for o in observations for check in (o["checks"] or [])
     )
     verdict = {"passed": not issues, "issues": sorted(set(issues)), "coverage_percent": percentages,
+               "coverage_enabled": config.get("coverage_enabled", True),
+               "output_mode": config.get("output_mode", "full"),
                "cases": {"total": len(observations), "generated": len(observations),
                          "executed": len(observations) - unexecuted, "unexecuted": unexecuted,
                          "failed": failed_cases, "verified_by_parent": verified_by_parent},
@@ -498,6 +508,9 @@ def console_summary(verdict: dict, build_dir: Path, coverage: dict | None = None
         "Duration:\t" + paint(f"{verdict['duration_seconds']:.1f}s" if verdict.get("duration_seconds") is not None else "N/A", 37),
         "", "==================== Coverage Summary ====================",
     ]
+    if not config.get("coverage_enabled", True):
+        lines[-1] = "Coverage:\tDisabled"
+        return "\n".join(lines)
     for dim in DIMENSIONS:
         name = "operations" if dim == "operation" else dim
         entry = summary.get(name) or {}
@@ -568,18 +581,20 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
                 matched = exception_for(identity["config"], o["method"], o["path"], failure.get("type", "")) if failure else None
                 db.execute("INSERT INTO check_result (observation_id, name, status, failure_type, failure_message, exception_json) VALUES (?,?,?,?,?,?)",
                            (observation_id, check.get("name"), check.get("status"), failure.get("type"), failure.get("message"), json.dumps(matched) if matched else None))
-        for dim in DIMENSIONS:
+        for dim in DIMENSIONS if identity.get("config", {}).get("coverage_enabled", True) else ():
             detail = (coverage.get("summary") or {}).get("operations" if dim == "operation" else dim) or {}
             db.execute("INSERT INTO coverage (build_id, dimension, percent, covered, total, detail_json) VALUES (?,?,?,?,?,?)",
                        (build_id, dim, detail.get("percent"), detail.get("covered"), detail.get("total"), json.dumps(detail)))
 
 
-def refresh_report(output: Path) -> None:
+def refresh_report(output: Path) -> bool:
     try:
         from report import generate_report
         generate_report(output, output / "report.html")
+        return True
     except Exception as exc:
         print(f"Warning: HTML report generation failed: {exc}", file=sys.stderr)
+        return False
 
 
 def main() -> int:
@@ -620,13 +635,21 @@ def main() -> int:
                 raise ValueError(f"Check status override references an unselected operation: {operation}")
         report_path, events_path, junit_path = (build_dir / name for name in ("schemathesis.json", "events.ndjson", "junit.xml"))
         coverage_path, html_path = build_dir / "coverage.json", build_dir / "coverage.html"
+        coverage_enabled = config.get("coverage_enabled", True)
+        essentials = config.get("output_mode", "full") == "essentials"
+        coverage_html = coverage_enabled and config.get("coverage_html", True) and not essentials
         env = os.environ.copy()
         env.update({"SCHEMATHESIS_HOOKS": "hooks", "PYTHONUTF8": "1", "PYTHONPATH": str(Path(__file__).parent)})
+        env["API_MITIGATION_COVERAGE_ENABLED"] = "true" if coverage_enabled else "false"
         executable = schemathesis_executable()
         cmd = [executable, "run", schema_location, "--url", config["base_url"],
                "--report-json-path", str(report_path), "--report-ndjson-path", str(events_path),
-               "--report-junit-path", str(junit_path), "--coverage-format", "html,json",
-               "--coverage-report-html-path", str(html_path), "--coverage-report-json-path", str(coverage_path), "--no-color"]
+               "--report-junit-path", str(junit_path), "--no-color"]
+        if coverage_enabled:
+            cmd.extend(["--coverage-format", "html,json" if coverage_html else "json",
+                        "--coverage-report-json-path", str(coverage_path)])
+        if coverage_html:
+            cmd.extend(["--coverage-report-html-path", str(html_path)])
         if config.get("read_only", False):
             cmd.extend(["--exclude-method", "POST", "--exclude-method", "PUT", "--exclude-method", "PATCH", "--exclude-method", "DELETE", "--exclude-method", "TRACE"])
         if "test_operations" in config:
@@ -652,7 +675,11 @@ def main() -> int:
         with (build_dir / "console.log").open("w", encoding="utf-8") as log:
             process = subprocess.run(cmd, env=env, cwd=Path(__file__).parent, stdout=log, stderr=subprocess.STDOUT, check=False)
         redact_evidence_tokens((report_path, events_path, junit_path, coverage_path, html_path, build_dir / "console.log"))
-        evidence_files = (report_path, events_path, junit_path, coverage_path, html_path)
+        evidence_files = (report_path, events_path, junit_path)
+        if coverage_enabled:
+            evidence_files += (coverage_path,)
+        if coverage_html:
+            evidence_files += (html_path,)
         missing_evidence = [f"Missing evidence file: {file.name}" for file in evidence_files if not file.is_file() or file.stat().st_size == 0]
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {}
         coverage = json.loads(coverage_path.read_text(encoding="utf-8")) if coverage_path.is_file() else {}
@@ -677,7 +704,16 @@ def main() -> int:
         verdict["duration_seconds"] = time.perf_counter() - started
         (build_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
         write_database(build_dir / "evidence.sqlite", identity, expected, observations, scenarios, coverage, verdict, schema)
-        refresh_report(output)
+        report_written = refresh_report(output)
+        discard = (events_path,) if not essentials else ()
+        if essentials and report_written:
+            discard = (events_path, report_path, junit_path, coverage_path, html_path,
+                       build_dir / "verdict.json", build_dir / "console.log", build_dir / "schemathesis.toml")
+        for path in discard:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"Warning: Could not remove processed {path.name}: {exc}", file=sys.stderr)
         print(console_summary(verdict, build_dir, coverage, config))
         return 0 if verdict["passed"] else 1
     except Exception as exc:
@@ -686,6 +722,7 @@ def main() -> int:
         (target / "runner-error.json").write_text(json.dumps(error, indent=2), encoding="utf-8")
         if build_dir is not None:
             verdict = {"passed": False, "issues": [str(exc)], "coverage_percent": {}, "operations": {"schema": len(expected), "tested": 0, "passed": 0, "skipped": sorted(f"{m} {p}" for m, p in expected)}, "observed_cases": 0, "observed_failures": []}
+            verdict["coverage_enabled"] = config.get("coverage_enabled", True)
             verdict["duration_seconds"] = time.perf_counter() - started
             identity = {"build_id": bid, "component_version": config.get("component_version"), "configuration_id": config.get("configuration_id"),
                         "schema_location": schema_location or config.get("schema"), "base_url": config.get("base_url"),
