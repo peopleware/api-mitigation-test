@@ -646,6 +646,41 @@ def test_global_exception_preserves_failure_evidence(tmp_path, server, fmt):
     assert not (out / "events.ndjson").exists()
 
 
+@pytest.mark.parametrize("value", [None, True, 0, "minimal", [], {}])
+def test_output_mode_rejects_invalid_values(tmp_path, value):
+    config = {"schema": "schema.yaml", "base_url": "http://example.test",
+              "component_version": "1", "configuration_id": "test", "output_mode": value}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="output_mode must be 'full' or 'essentials'"):
+        read_config(path)
+
+
+@pytest.mark.parametrize("coverage_enabled,unexplained", [(True, False), (True, True), (False, False), (False, True)])
+def test_essentials_output_retains_only_database_and_main_report(tmp_path, server, coverage_enabled, unexplained):
+    from report import generate_report, load_database
+
+    settings = {"output_mode": "essentials", "coverage_enabled": coverage_enabled,
+                "test_operations": [{"method": "POST", "path": "/items"}]}
+    if coverage_enabled:
+        settings["min_operation_coverage"] = 0
+    proc, out = run(tmp_path, server, exceptions=[] if unexplained else [EXCEPTION], thresholds=settings)
+    assert proc.returncode == int(unexplained), proc.stdout + proc.stderr
+    assert {path.relative_to(out.parent).as_posix() for path in out.parent.rglob("*") if path.is_file()} == {
+        f"{out.name}/evidence.sqlite", "report.html"}
+    with sqlite3.connect(out / "evidence.sqlite") as db:
+        verdict = json.loads(db.execute("SELECT verdict_json FROM build").fetchone()[0])
+        assert verdict["passed"] == (not unexplained)
+        assert verdict["output_mode"] == "essentials"
+        assert verdict["checks"]["failed"] > 0
+        assert (db.execute("SELECT COUNT(*) FROM coverage").fetchone()[0] > 0) == coverage_enabled
+        assert db.execute("SELECT COUNT(*) FROM observation WHERE request_json IS NOT NULL").fetchone()[0] > 0
+    report_path = out.parent / "report.html"
+    assert load_database(out / "evidence.sqlite", report_path)[0]["coverage_href"] is None
+    assert generate_report(out.parent, report_path)[0] == 1
+    assert report_path.stat().st_size
+
+
 def test_unexplained_and_expired_exception_fail(tmp_path, server):
     proc, out = run(tmp_path, server, exceptions=[])
     assert proc.returncode == 1
@@ -683,13 +718,15 @@ def test_zero_operations(tmp_path, server):
 
 
 @pytest.mark.parametrize("failure_site", ["report", "parse_events", "write_database"])
-def test_processing_failure_retains_events_until_database_written(tmp_path, server, monkeypatch, capsys, failure_site):
+@pytest.mark.parametrize("output_mode", ["full", "essentials"])
+def test_processing_failure_retains_events_until_database_written(tmp_path, server, monkeypatch, capsys, failure_site, output_mode):
     import report
     import runner
 
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"schema": f"{server}/openapi.json", "base_url": server,
                                   "component_version": "1.0", "configuration_id": "integration",
+                                  "output_mode": output_mode,
                                   "read_only": True, "test_operations": [{"method": "GET", "path": "/items"}]}), encoding="utf-8")
     monkeypatch.setenv("API_MITIGATION_BUILD_ID", "report-warning")
     monkeypatch.setenv("API_MITIGATION_OUTPUT_DIR", str(tmp_path / "out"))
@@ -708,7 +745,10 @@ def test_processing_failure_retains_events_until_database_written(tmp_path, serv
     assert runner.main() == (0 if failure_site == "report" else 2)
     assert "injected processing failure" in capsys.readouterr().err
     out = next((tmp_path / "out").iterdir())
-    assert (out / "events.ndjson").exists() == (failure_site != "report")
+    assert (out / "events.ndjson").exists() == (failure_site != "report" or output_mode == "essentials")
+    if output_mode == "essentials":
+        assert (out / "console.log").stat().st_size
+        assert (out / "schemathesis.json").stat().st_size
     if failure_site == "report":
         assert (out / "evidence.sqlite").exists()
 

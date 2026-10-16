@@ -62,6 +62,26 @@ that must exercise each selected operation successfully. An operation with only
 pass. This does not replace schema or error checks. Leave it false for deliberate
 denial-only scenarios, such as an authenticated identity without application access.
 
+`output_mode` accepts `full` (the default) or `essentials`. To retain only the
+per-run SQLite database and the main HTML report:
+
+```yaml
+output_mode: essentials
+```
+
+The runner writes `evidence.sqlite` in the build directory and `report.html` at
+the output root. Once both are written, it removes intermediate reports, JUnit,
+the console log, the standalone verdict, and generated Schemathesis configuration.
+The verdict, checks, sanitized HTTP exchanges, and any coverage measurements remain
+in SQLite; the main report can be rebuilt from it. The separate TraceCov HTML
+report is not generated, regardless of `coverage_html`. Coverage collection and
+thresholds remain enabled unless `coverage_enabled: false` is also set.
+
+Cleanup applies to passing runs and recorded test failures. If processing or main
+report generation fails, diagnostic files remain. File removal failures emit
+warnings without changing the test exit status. Existing runs under the output
+root are not cleaned up.
+
 `test_operations` is optional. When present, it must be a nonempty list of HTTP methods and exact OpenAPI schema paths or path globs. Methods are case-insensitive; paths are case-sensitive. Patterns match the entire schema path, including literal parameter placeholders such as `{orderId}`, rather than concrete request URLs.
 
 - `*` matches zero or more characters within a single path segment.

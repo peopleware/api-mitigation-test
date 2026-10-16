@@ -126,11 +126,13 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses", "coverage_html", "coverage_enabled"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses", "coverage_html", "coverage_enabled", "output_mode"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
         raise ValueError(f"Unknown config keys: {sorted(extra)}")
+    if value.get("output_mode", "full") not in ("full", "essentials"):
+        raise ValueError("output_mode must be 'full' or 'essentials'")
     for name in required:
         if not isinstance(value[name], str) or not value[name].strip():
             raise ValueError(f"{name} must be a nonempty string")
@@ -446,6 +448,7 @@ def assess(config: dict, report: dict, coverage: dict, observations: list[dict],
     )
     verdict = {"passed": not issues, "issues": sorted(set(issues)), "coverage_percent": percentages,
                "coverage_enabled": config.get("coverage_enabled", True),
+               "output_mode": config.get("output_mode", "full"),
                "cases": {"total": len(observations), "generated": len(observations),
                          "executed": len(observations) - unexecuted, "unexecuted": unexecuted,
                          "failed": failed_cases, "verified_by_parent": verified_by_parent},
@@ -584,12 +587,14 @@ def write_database(path: Path, identity: dict, expected: set[tuple[str, str]], o
                        (build_id, dim, detail.get("percent"), detail.get("covered"), detail.get("total"), json.dumps(detail)))
 
 
-def refresh_report(output: Path) -> None:
+def refresh_report(output: Path) -> bool:
     try:
         from report import generate_report
         generate_report(output, output / "report.html")
+        return True
     except Exception as exc:
         print(f"Warning: HTML report generation failed: {exc}", file=sys.stderr)
+        return False
 
 
 def main() -> int:
@@ -631,7 +636,8 @@ def main() -> int:
         report_path, events_path, junit_path = (build_dir / name for name in ("schemathesis.json", "events.ndjson", "junit.xml"))
         coverage_path, html_path = build_dir / "coverage.json", build_dir / "coverage.html"
         coverage_enabled = config.get("coverage_enabled", True)
-        coverage_html = coverage_enabled and config.get("coverage_html", True)
+        essentials = config.get("output_mode", "full") == "essentials"
+        coverage_html = coverage_enabled and config.get("coverage_html", True) and not essentials
         env = os.environ.copy()
         env.update({"SCHEMATHESIS_HOOKS": "hooks", "PYTHONUTF8": "1", "PYTHONPATH": str(Path(__file__).parent)})
         env["API_MITIGATION_COVERAGE_ENABLED"] = "true" if coverage_enabled else "false"
@@ -698,11 +704,16 @@ def main() -> int:
         verdict["duration_seconds"] = time.perf_counter() - started
         (build_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
         write_database(build_dir / "evidence.sqlite", identity, expected, observations, scenarios, coverage, verdict, schema)
-        try:
-            events_path.unlink(missing_ok=True)
-        except OSError as exc:
-            print(f"Warning: Could not remove processed events.ndjson: {exc}", file=sys.stderr)
-        refresh_report(output)
+        report_written = refresh_report(output)
+        discard = (events_path,) if not essentials else ()
+        if essentials and report_written:
+            discard = (events_path, report_path, junit_path, coverage_path, html_path,
+                       build_dir / "verdict.json", build_dir / "console.log", build_dir / "schemathesis.toml")
+        for path in discard:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"Warning: Could not remove processed {path.name}: {exc}", file=sys.stderr)
         print(console_summary(verdict, build_dir, coverage, config))
         return 0 if verdict["passed"] else 1
     except Exception as exc:

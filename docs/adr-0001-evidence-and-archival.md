@@ -18,6 +18,15 @@ Coverage measurement is enabled by default. A consuming project can set `coverag
 
 The consuming project owns the config and archives every `evidence.sqlite` to durable storage with its required access controls and retention period. CI artifact capture is a transport and short-term debugging aid. Artifact upload must run on failure, too. Publishing or archiving evidence externally is outside the test image because each consuming project has different storage governance.
 
+Projects can choose `output_mode: essentials` to retain only the per-build SQLite
+database and the main HTML report after both are successfully written. This mode
+skips the companion coverage HTML and removes other generated outputs for that
+run, including JUnit and the standalone verdict; their absence is intentional.
+Recorded API failures still receive compact output because the database preserves
+their evidence. Processing or main report generation failures retain diagnostic
+files. Coverage measurement is controlled separately and remains enabled by
+default. Existing runs are not pruned.
+
 ## Consequences
 
 The database and companion reports make a build's actual scope reviewable. A build can pass with documented, unexpired exceptions or omitted coverage thresholds; the verdict records both. A passing build states what was verified during that run and does not establish that the entire system has no vulnerabilities. Missing reports, a zero-operation run, or unexplained failures fail closed while retaining available files for diagnosis.
