@@ -134,6 +134,8 @@ assert.equal(item.querySelectorAll('.exchange-panel').length, 2);
 assert(item.querySelectorAll('.exchange-headers').every(details => !details.open));
 assert(item.querySelectorAll('.passed-checks').every(details => !details.open));
 assert.equal(get('run-notices').querySelectorAll('.issues').length, 0);
+assert.equal(get('run-notices').childNodes.length, 0);
+assert.equal(get('run-notices').hidden, true);
 assert(get('run-stats').textContent.includes('Failures accepted by an exception'));
 get('run-stats').children[3].onclick();
 assert.equal(get('operation-filters').children.find(button => button.textContent.startsWith('Failed')).attributes['aria-pressed'], 'true');
@@ -429,6 +431,7 @@ vm.runInNewContext(`
 assert(get('run-notices').textContent.includes('33.33%'));
 assert(get('run-notices').textContent.includes('405 was observed'));
 assert(get('run-notices').textContent.includes('→ 500'));
+assert(!get('run-notices').textContent.includes('logout: bad'));
 assert.equal(vm.runInNewContext('documentedResponseCoverage(DATA.combined).covered', context), 1);
 assert.equal(get('selected-status').textContent, 'FAIL');
 assert.equal(get('newer-run').disabled, true);

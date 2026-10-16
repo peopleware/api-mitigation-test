@@ -201,7 +201,6 @@ function renderRun() {
   const notes = $('run-notices');
   clear(notes);
   if (!run.http_available) notes.append(node('p', 'notice', 'This older run has no recorded HTTP exchanges.'));
-  for (const issue of run.issues) notes.append(node('p', 'notice', issue));
   const coverage = documentedResponseCoverage(run);
   if (coverage) {
     notes.append(node('p', 'notice', 'Documented response coverage: ' + coverage.percent + '% · ' + coverage.covered + '/' + coverage.total +
