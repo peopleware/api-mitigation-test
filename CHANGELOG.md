@@ -3,7 +3,7 @@
 
 # Changelog
 
-## Unreleased
+## 1.1.1
 
 ### Maintenance
 
