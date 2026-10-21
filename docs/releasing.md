@@ -24,4 +24,11 @@ Publishing requires access to the GitHub repository, the `ppwcode/api-mitigation
 
 ## Deploy and operate
 
+For the [October 2026 emSign incident](https://discuss.python.org/t/109576), publish
+a new patch release from the updated sources and replace existing runner images
+in consuming pipelines. The release build pulls the base image and disables
+layer reuse to refresh system CA certificates. Updating sources or a local
+virtual environment does not remediate already published images or existing
+containers; consumers must pull the new release and recreate their containers.
+
 The image and Action are delivery mechanisms; each consuming project owns its target config, CI invocation, secured `API_MITIGATION_BEARER_TOKEN`, and evidence retention. After a release, update consuming projects to the intended Action major tag or Bitbucket pipe image version, run against their isolated API, and capture artifacts even when the test fails. Bitbucket Cloud CI artifacts are short-lived; the consuming project must archive every per-build `evidence.sqlite` durably under its own retention and access rules. See [CI integration](ci-integration.md) and [evidence outputs](evidence.md).

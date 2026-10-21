@@ -7,8 +7,12 @@ See [CONTRIBUTING](../CONTRIBUTING.md) for Python setup and the test suite. Use 
 With Docker running, build from the root of this runner repository:
 
 ```sh
-docker build -t ppwcode/api-mitigation-test:local .
+docker build --pull --no-cache -t ppwcode/api-mitigation-test:local .
 ```
+
+Pull and rebuild without cached layers so the image receives current system CA
+certificates as well as the patched pip and certifi packages. Previously built
+images retain their old trust stores and must be replaced.
 
 From PowerShell 7, run the repository-owned container smoke test:
 

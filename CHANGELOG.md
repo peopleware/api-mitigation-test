@@ -3,6 +3,17 @@
 
 # Changelog
 
+## Unreleased
+
+### Security
+
+- Address the [emSign CA incident](https://discuss.python.org/t/109576) by updating
+  certifi to 2026.10.19 and bootstrapping pip 26.2.2 from a hash-verified wheel
+  before dependency installation in Docker, CI, and local development.
+- Update the runner base to Python 3.12.15 on Debian Bookworm, refresh system CA
+  certificates, and rebuild release images without cached layers. Existing
+  environments and deployed images must be updated separately.
+
 ## 1.1.0
 
 ### Features

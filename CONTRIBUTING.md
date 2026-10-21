@@ -9,10 +9,19 @@ Use Python 3.12. From the repository root, create a virtual environment and acti
 ```sh
 python -m venv .venv
 # Activate the environment before continuing.
+python -m pip --disable-pip-version-check install --no-cache-dir --no-index --no-deps --require-hashes -r requirements-bootstrap.txt
 python -m pip install -r requirements.txt pytest==8.4.2
 python -m pip check
 python -m pytest -q tests
 ```
+
+Run the bootstrap and dependency installation commands in existing environments
+too. The [October 2026 emSign incident](https://discuss.python.org/t/109576)
+requires updating both pip's bundled CA certificates and the application's
+`certifi` package. The bootstrap verifies the pip wheel against the SHA256 from
+the notice before installation. Repeat it after creating any new virtual
+environment, since Python's bundled pip may still be affected. Keep the host's
+OS certificate store updated as well.
 
 With Node.js and npm installed, `package.json` also provides command shortcuts. Activate the Python virtual environment first so the shortcuts use its interpreter. No `npm install` is needed; the `version` field in `package.json` is the source of truth for the release version. Run `npm run` to list the shortcuts:
 
