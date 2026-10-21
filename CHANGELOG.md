@@ -5,6 +5,11 @@
 
 ## Unreleased
 
+### Maintenance
+
+- Update pinned Python dependencies to compatible stable releases, including
+  Schemathesis 4.32.2 and TraceCov 0.25.4.
+
 ### Security
 
 - Address the [emSign CA incident](https://discuss.python.org/t/109576) by updating
