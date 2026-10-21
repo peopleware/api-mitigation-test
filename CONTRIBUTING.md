@@ -4,9 +4,10 @@ This repository delivers the same runner through a Docker image, GitHub Action, 
 
 ## Develop and test locally
 
-Use Python 3.12. From the repository root, create a virtual environment and activate it (`. .venv/bin/activate` in a POSIX shell or `.\.venv\Scripts\Activate.ps1` in PowerShell), then install dependencies and run the tests:
+Use Python 3.15 to match CI and the Docker runtime. From the repository root, create a virtual environment and activate it (`. .venv/bin/activate` in a POSIX shell or `.\.venv\Scripts\Activate.ps1` in PowerShell), then install dependencies and run the tests:
 
 ```sh
+python --version  # Must report Python 3.15.x.
 python -m venv .venv
 # Activate the environment before continuing.
 python -m pip --disable-pip-version-check install --no-cache-dir --no-index --no-deps --require-hashes -r requirements-bootstrap.txt
@@ -14,6 +15,10 @@ python -m pip install -r requirements.txt pytest==8.4.2
 python -m pip check
 python -m pytest -q tests
 ```
+
+When upgrading from an older Python version, recreate the virtual environment
+with Python 3.15; installing dependencies does not upgrade its interpreter.
+On Windows, `py -3.15 -m venv .venv` explicitly selects the installed Python 3.15.
 
 Run the bootstrap and dependency installation commands in existing environments
 too. The [October 2026 emSign incident](https://discuss.python.org/t/109576)

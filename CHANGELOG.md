@@ -9,13 +9,15 @@
 
 - Update pinned Python dependencies to compatible stable releases, including
   Schemathesis 4.32.2 and TraceCov 0.25.4.
+- Upgrade the runner and smoke-test fixture to Python 3.15.0 and use Python 3.15
+  in CI and local development.
 
 ### Security
 
 - Address the [emSign CA incident](https://discuss.python.org/t/109576) by updating
   certifi to 2026.10.19 and bootstrapping pip 26.2.2 from a hash-verified wheel
   before dependency installation in Docker, CI, and local development.
-- Update the runner base to Python 3.12.15 on Debian Bookworm, refresh system CA
+- Refresh the Debian Bookworm runner base and system CA
   certificates, and rebuild release images without cached layers. Existing
   environments and deployed images must be updated separately.
 

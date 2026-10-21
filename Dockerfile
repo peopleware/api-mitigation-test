@@ -1,4 +1,4 @@
-FROM python:3.12.15-slim-bookworm
+FROM python:3.15.0-slim-bookworm
 WORKDIR /app
 # Refresh the OS trust store as well as pip's separately bundled certificates.
 RUN apt-get update \

@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: '3.15'
           cache: pip
       - name: Bootstrap patched pip with a verified wheel
         run: python -m pip --disable-pip-version-check install --no-cache-dir --no-index --no-deps --require-hashes -r requirements-bootstrap.txt
