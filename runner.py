@@ -16,9 +16,11 @@ import subprocess
 import sys
 import sysconfig
 import time
+import tomllib
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from urllib.request import urlopen
 
+import tomli_w
 import yaml
 from evidence import not_executed
 
@@ -126,11 +128,13 @@ def read_config(path: Path) -> tuple[dict, bytes]:
     if not isinstance(value, dict):
         raise ValueError("Config must be an object")
     required = {"schema", "base_url", "component_version", "configuration_id"}
-    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "read_only", "check_statuses", "require_success_responses", "coverage_html", "coverage_enabled", "output_mode"} | {f"min_{d}_coverage" for d in DIMENSIONS}
+    allowed = required | {"check_exceptions", "test_operations", "stateful_max_examples", "schemathesis_config", "read_only", "check_statuses", "require_success_responses", "coverage_html", "coverage_enabled", "output_mode"} | {f"min_{d}_coverage" for d in DIMENSIONS}
     if missing := required - value.keys():
         raise ValueError(f"Missing config keys: {sorted(missing)}")
     if extra := value.keys() - allowed:
         raise ValueError(f"Unknown config keys: {sorted(extra)}")
+    if "schemathesis_config" in value and (not isinstance(value["schemathesis_config"], str) or not value["schemathesis_config"].strip()):
+        raise ValueError("schemathesis_config must be a nonempty file path")
     if value.get("output_mode", "full") not in ("full", "essentials"):
         raise ValueError("output_mode must be 'full' or 'essentials'")
     for name in required:
@@ -597,6 +601,64 @@ def refresh_report(output: Path) -> bool:
         return False
 
 
+def prepare_schemathesis_config(config: dict, config_path: Path, build_dir: Path) -> Path | None:
+    """Preserve the custom configuration, overriding only runner-owned settings."""
+    from schemathesis.config import ConfigError, SchemathesisConfig
+
+    source = None
+    if "schemathesis_config" in config:
+        source = (config_path.parent / config["schemathesis_config"]).resolve()
+    else:
+        # Match discovery from the Schemathesis subprocess's working directory, including /app mounts.
+        directory = Path(__file__).resolve().parent
+        while True:
+            candidate = directory / "schemathesis.toml"
+            if candidate.is_file():
+                source = candidate
+                break
+            if (directory / ".git").is_dir() or directory == directory.parent:
+                break
+            directory = directory.parent
+    document = {}
+    if source is not None:
+        try:
+            document = tomllib.loads(source.read_text(encoding="utf-8"))
+            SchemathesisConfig.from_dict(document, base_dir=str(source.parent))
+        except (OSError, UnicodeError, ValueError, ConfigError) as exc:
+            raise ValueError(f"Invalid Schemathesis configuration {source}: {exc}") from exc
+    generated = "test_operations" in config or config.get("stateful_max_examples") is not None or bool(config.get("check_statuses"))
+    if not generated:
+        return source
+
+    # Runner controls also apply to project/operation scopes, which outrank global phase settings.
+    overrides = {}
+    for item in config.get("check_statuses", []):
+        overrides.setdefault((item["method"].upper(), item["path"]), {})[item["check"]] = {
+            "expected-statuses": item["expected_statuses"],
+        }
+    for scope in [document, *document.get("project", [])]:
+        for target in [scope, *scope.get("operations", [])]:
+            if "test_operations" in config:
+                target.setdefault("phases", {}).setdefault("coverage", {})["unexpected-methods"] = []
+            if config.get("stateful_max_examples") is not None:
+                target.setdefault("phases", {}).setdefault("stateful", {}).setdefault("generation", {})["max-examples"] = config["stateful_max_examples"]
+        if overrides:
+            # Schemathesis merges matching entries per setting, with earlier entries winning.
+            scope["operations"] = [
+                {"include-name": f"{method} {path}", "checks": checks}
+                for (method, path), checks in overrides.items()
+            ] + scope.get("operations", [])
+
+    if source is not None:
+        # Dictionary files are relative to the source TOML, not the generated artifact directory.
+        for dictionary in document.get("dictionaries", {}).values():
+            if "from-file" in dictionary:
+                dictionary["from-file"] = str((source.parent / dictionary["from-file"]).resolve())
+    target = build_dir / "schemathesis.toml"
+    target.write_text(tomli_w.dumps(document), encoding="utf-8")
+    return target
+
+
 def main() -> int:
     started = time.perf_counter()
     parser = argparse.ArgumentParser()
@@ -620,6 +682,7 @@ def main() -> int:
         build_dir = candidate
         config_path = Path(args.config).resolve()
         config, config_raw = read_config(config_path)
+        schemathesis_config = prepare_schemathesis_config(config, config_path, build_dir)
         schema_location, schema_raw, schema = load_schema(config, config_path)
         expected = schema_operations(schema)
         if "test_operations" in config:
@@ -655,22 +718,7 @@ def main() -> int:
         if "test_operations" in config:
             for method, path in sorted(expected):
                 cmd.extend(["--include-name", f"{method} {path}"])
-        if "test_operations" in config or config.get("stateful_max_examples") is not None or config.get("check_statuses"):
-            schemathesis_config = build_dir / "schemathesis.toml"
-            lines = []
-            if "test_operations" in config:
-                lines.extend(["[phases.coverage]", "unexpected-methods = []"])
-            if config.get("stateful_max_examples") is not None:
-                lines.extend(["[phases.stateful.generation]", f"max-examples = {config['stateful_max_examples']}"])
-            overrides = {}
-            for item in config.get("check_statuses", []):
-                overrides.setdefault((item["method"].upper(), item["path"]), []).append(item)
-            for (method, path), items in overrides.items():
-                lines.extend(["[[operations]]", f"include-name = {json.dumps(f'{method} {path}')}"])
-                for item in items:
-                    lines.extend([f"[operations.checks.{item['check']}]",
-                                  f"expected-statuses = {json.dumps(item['expected_statuses'])}"])
-            schemathesis_config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if schemathesis_config is not None:
             cmd = [executable, "--config-file", str(schemathesis_config), *cmd[1:]]
         with (build_dir / "console.log").open("w", encoding="utf-8") as log:
             process = subprocess.run(cmd, env=env, cwd=Path(__file__).parent, stdout=log, stderr=subprocess.STDOUT, check=False)
@@ -740,6 +788,12 @@ def main() -> int:
             print(console_summary(verdict, build_dir, config=config))
         print(f"API mitigation test failed: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if build_dir is not None:
+            try:
+                redact_evidence_tokens((build_dir / "schemathesis.toml",))
+            except OSError as exc:
+                print(f"Warning: Could not redact generated Schemathesis configuration: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

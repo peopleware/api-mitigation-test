@@ -27,6 +27,11 @@
 
 2. **Commit a test configuration.** Supply a matching OpenAPI schema, a URL reachable from the runner, the component version, and a stable configuration ID. Decide which operations and coverage thresholds should gate delivery. See the [configuration reference](docs/configuration.md).
 
+   To use custom Schemathesis dictionaries, parameter overrides, or phase settings,
+   set `schemathesis_config: ./schemathesis.toml` in that configuration. The path is
+   relative to the YAML/JSON file. Runner operation selection, status overrides,
+   and stateful limits are merged with the custom TOML; see [precedence and discovery](docs/configuration.md#schemathesis_config-path).
+
 3. **Provide suitable credentials.** Obtain an API access token for a test identity whose claims and application permissions match the scenarios you want to exercise. Pass it as `API_MITIGATION_BEARER_TOKEN` through the execution environment. The runner does not acquire or refresh tokens. See [authentication and environment requirements](docs/ci-integration.md#prepare-the-target).
 
 4. **Run the tests in CI.** Test each relevant change before deployment, using the Docker image, GitHub Action, or Bitbucket pipe. Let a failing verdict fail the pipeline. Collect reports and service logs even when testing fails, then clean up disposable resources. See [CI integration examples](docs/ci-integration.md).

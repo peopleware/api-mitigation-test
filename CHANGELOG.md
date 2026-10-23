@@ -3,6 +3,19 @@
 
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- Preserve custom Schemathesis TOML dictionaries, parameters, phase limits, and
+  operation overrides when runner operation subsets, status checks, or stateful
+  options generate configuration. Runner-owned fields take precedence without
+  replacing unrelated settings or modifying the source TOML.
+- Add `schemathesis_config` for an explicit TOML path relative to the runner
+  YAML/JSON file, while retaining discovery of existing `/app/schemathesis.toml`
+  mounts. Validate custom files before loading the target schema and preserve
+  relative dictionary-file paths in merged artifacts.
+
 ## 1.1.1
 
 ### Maintenance

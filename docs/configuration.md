@@ -53,6 +53,59 @@ Version of the component under test, recorded in the build evidence. For example
 Identifier for the target configuration, recorded in the build evidence. For
 example, `staging-eu`.
 
+### `schemathesis_config: <path>`
+
+**Type:** nonempty string. **Default:** discover `schemathesis.toml` from the
+Schemathesis subprocess's working directory (the runner's own directory, `/app`
+in the image), searching parents until a Git directory or filesystem root.
+
+Use an explicit path for project-owned dictionaries, parameter overrides such as
+`fundId`, phase limits, or operation-specific Schemathesis settings:
+
+```yaml
+schemathesis_config: ./docker/local/schemathesis.toml
+test_operations:
+  - method: GET
+    path: /v1/funds/**
+```
+
+Relative paths resolve from the runner YAML/JSON file's directory; absolute paths
+are also accepted. In a container, use paths visible inside the container. An
+explicit path takes precedence over discovery; a missing, unreadable, malformed,
+or invalid file fails configuration validation before loading the API schema or
+sending requests. Invalid discovered files also fail. Discovery does not search
+beside the runner YAML unless that is also the subprocess's working directory.
+Existing `/app/schemathesis.toml` mounts continue to work without this option.
+
+The runner reads and validates the custom file without changing it. If runner
+settings require generated TOML, it writes a merged `schemathesis.toml` in the
+build artifact directory and passes it explicitly to Schemathesis. Otherwise it
+uses the original custom file, or Schemathesis defaults when no file is found.
+The merged artifact preserves values and operation order; comments and formatting
+are regenerated. Relative `dictionaries.*.from-file` paths keep their original
+TOML directory by becoming absolute paths in the merged artifact.
+
+Runner settings take precedence only for these fields, including project and
+operation scopes:
+
+| Runner setting | Effect on the custom TOML |
+| --- | --- |
+| `test_operations` | Keeps CLI operation selection and sets `phases.coverage.unexpected-methods = []` to prevent undeclared-method probes outside the subset. |
+| `stateful_max_examples` | Replaces `phases.stateful.generation.max-examples`; other phase settings and limits remain intact. |
+| `check_statuses` | Replaces only the named check's `expected-statuses` for the exact method/schema path, including phase-specific checks. Other checks and enabled flags remain intact. |
+
+Status overrides are prepended as exact-operation entries; Schemathesis merges
+matching entries per setting with earlier entries winning. Existing operation
+entries retain their relative order and parameter precedence. Custom dictionaries,
+global/body parameters, and unrelated operation, project, check, and phase settings
+remain intact. Existing CLI target URL, reports, and method/operation selection
+continue to take precedence under Schemathesis's normal CLI rules. Custom filters
+or disabled phases/checks can still reduce executed coverage; the runner's existing
+evidence and coverage gates continue to apply.
+
+Keep credentials in environment variables rather than TOML literals. The merged
+file follows the existing `output_mode` retention rules for generated configuration.
+
 ### `read_only: true | false`
 
 **Type:** boolean. **Default:** `false`.
@@ -90,9 +143,9 @@ Each selector must match at least one schema operation with that method; otherwi
 
 ### `stateful_max_examples: <count>`
 
-**Type:** positive integer. **Default:** Schemathesis's default stateful behavior.
+**Type:** positive integer. **Default:** custom TOML settings, or Schemathesis's default stateful behavior.
 
-`stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. The examples, coverage, and fuzzing phases still run. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to keep Schemathesis's default stateful behavior.
+`stateful_max_examples` is optional. When set, it caps the stateful phase's generated examples per operation; smaller values reduce chained requests and evidence rows. Other phases retain their custom settings or defaults. A cap can reduce the coverage the API actually exercises, so retain or set the `min_*_coverage` thresholds that matter to your project: the runner will fail if measured TraceCov coverage falls below them. Omit the setting to preserve the custom TOML's stateful limit, or Schemathesis's default when none is configured.
 
 ### `require_success_responses: true | false`
 

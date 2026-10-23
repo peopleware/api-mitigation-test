@@ -20,6 +20,7 @@ requests==2.34.2
 rich==15.0.0
 schemathesis==4.32.2
 sortedcontainers==2.4.0
+tomli-w==1.2.0
 tracecov==0.25.4
 tracecov-community==0.25.4
 typing_extensions==4.16.0

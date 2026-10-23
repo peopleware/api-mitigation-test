@@ -26,6 +26,14 @@ docker run --rm \
 
 Add `--network` with your target's network name when required. Outside GitHub/Bitbucket, `API_MITIGATION_BUILD_ID` is mandatory. Do not reuse it in the same output root. See [evidence outputs](evidence.md).
 
+For custom Schemathesis settings, add `schemathesis_config` to the runner YAML/JSON.
+For example, `schemathesis_config: ./schemathesis.toml` in
+`tests/api-mitigation.yaml` loads `/workspace/tests/schemathesis.toml` from the mount
+above. No `/app` mount is required with an explicit path. Existing `/app/schemathesis.toml`
+mounts remain supported through discovery, including when operation selection,
+status checks, or stateful limits generate a merged configuration. See
+[configuration precedence](configuration.md#schemathesis_config-path).
+
 ## GitHub Actions
 
 ```yaml
