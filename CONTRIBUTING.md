@@ -42,6 +42,8 @@ npm test -- -k version
 
 The version shortcut creates a release commit and tag and requires a clean working tree, just like calling the Python script directly.
 
+For a real Chrome check of an existing report bundle, run `node tests/report_browser.test.cjs "<Chrome executable path>" artifacts/report.html` with Node.js 24 or newer. It uses an isolated hidden headless browser profile, opens the report through `file://` with default browser security settings, checks lazy evidence loading and navigation, and prints timing and heap measurements.
+
 Tests use a disposable HTTP API. Wrapper tests require `sh` or `bash`; report interaction tests use Node.js when available. Container checks require a running Docker daemon. Use the same project-owned Docker Compose strategy for a local API sandbox. See [local environments and container testing](docs/local-testing.md) for the image build, sandbox setup, and smoke-test workflow.
 
 Keep credentials, live API payloads, and generated artifacts out of commits. Run generated requests only against an isolated target with disposable data.

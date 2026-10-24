@@ -21,6 +21,12 @@
   check, and sanitized HTTP exchange. Keep the HTML and its matching `.data/`
   directory together when copying or archiving reports.
 
+### Maintenance
+
+- Add an optional headless Chrome check for offline report loading, lazy case
+  evidence, navigation, and rendering performance under default browser
+  security settings, without additional npm dependencies.
+
 ## 1.1.1
 
 ### Maintenance
