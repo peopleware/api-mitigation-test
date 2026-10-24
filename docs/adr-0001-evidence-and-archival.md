@@ -19,7 +19,7 @@ Coverage measurement is enabled by default. A consuming project can set `coverag
 The consuming project owns the config and archives every `evidence.sqlite` to durable storage with its required access controls and retention period. CI artifact capture is a transport and short-term debugging aid. Artifact upload must run on failure, too. Publishing or archiving evidence externally is outside the test image because each consuming project has different storage governance.
 
 Projects can choose `output_mode: essentials` to retain only the per-build SQLite
-database and the main HTML report after both are successfully written. This mode
+database and the main report bundle (HTML and companion data directory) after both are successfully written. This mode
 skips the companion coverage HTML and removes other generated outputs for that
 run, including JUnit and the standalone verdict; their absence is intentional.
 Recorded API failures still receive compact output because the database preserves

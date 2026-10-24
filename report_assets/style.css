@@ -279,6 +279,10 @@ h1 { font-size: clamp(20px,2vw,26px); letter-spacing: -.035em; font-weight: 650;
 .trend-tooltip-stats { font-size: 10px; color: #c5cad1; margin-top: 6px; }
 
 .history-table th { overflow-wrap: anywhere; }
+.pagination { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:12px; margin:12px 0; }
+.pagination span { color:var(--muted); font-size:12px; }
+.pagination button { min-height:36px; }
+[aria-busy="true"] { cursor:progress; }
 
 .operation-change { display: inline-block; margin-right: 5px; font-size: 10px; }
 .operation-change.up { color: var(--green); }

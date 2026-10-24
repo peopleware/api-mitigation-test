@@ -17,48 +17,93 @@ const fmtDate = value => {
   return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ', ' +
     date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 };
-function combineRuns(runs) {
-  const operations = new Map();
-  const combined = { ...runs[0], build_number: 'All scenarios', configuration_id: runs.length + ' scenarios combined',
-    coverage_href: null, combined: true, passed: runs.every(run => run.passed), issues: [], operations: [],
-    http_available: runs.every(run => run.http_available) };
-  const totals = ['case_count', 'check_count', 'generated_count', 'executed_count', 'unexecuted_count',
-    'unknown_execution_count', 'verified_by_parent_count', 'failure_count', 'accepted_count', 'success_count'];
-  for (const key of totals) combined[key] = runs.reduce((sum, run) => sum + (run[key] || 0), 0);
-  for (const run of runs) {
-    combined.issues.push(...run.issues.map(issue => run.configuration_id + ': ' + issue));
-    for (const op of run.operations) {
-      const key = op.method + ' ' + op.path;
-      if (!operations.has(key)) operations.set(key, { ...op, expected: false, tested: false, cases: [], scenarios: [], response_coverage: [] });
-      const target = operations.get(key);
-      target.expected ||= op.expected;
-      target.tested ||= op.tested;
-      for (const response of op.response_coverage || []) {
-        const existing = target.response_coverage.find(item => item.status === response.status);
-        if (existing) existing.hits += response.hits;
-        else target.response_coverage.push({ ...response });
-      }
-      const source = { build_number: run.build_number, configuration_id: run.configuration_id };
-      target.cases.push(...op.cases.map(item => ({ ...item, source })));
-      target.scenarios.push(...op.scenarios.map(item => ({ ...item, source })));
-    }
+// Classic scripts allow on-demand loading from a double-clicked file:// report.
+const chunkCache = new Map(), pendingChunks = new Map(), chunkQueue = [];
+const CACHE_BYTES = 16 * 1024 * 1024;
+let cacheBytes = 0, runningChunks = 0;
+window.reportChunk = (ref, bytes, payload) => {
+  const pending = pendingChunks.get(ref);
+  if (pending?.receive) pending.receive({ bytes, payload });
+};
+function rememberChunk(ref, value, bytes) {
+  if (bytes > CACHE_BYTES) return;
+  while (cacheBytes + bytes > CACHE_BYTES && chunkCache.size) {
+    const oldest = chunkCache.keys().next().value;
+    cacheBytes -= chunkCache.get(oldest).bytes;
+    chunkCache.delete(oldest);
   }
-  combined.operations = [...operations.values()];
-  return combined;
+  chunkCache.set(ref, { value, bytes });
+  cacheBytes += bytes;
 }
-DATA.combined = DATA.combine_runs ? combineRuns(DATA.runs) : null;
-const state = { run: DATA.combined ? -1 : 0, filter: 'all', view: 'report', entity: '', failureType: '' };
+function loadChunk(ref) {
+  const cached = chunkCache.get(ref);
+  if (cached) {
+    chunkCache.delete(ref); chunkCache.set(ref, cached);
+    return Promise.resolve(cached.value);
+  }
+  if (pendingChunks.has(ref)) return pendingChunks.get(ref).promise;
+  const pending = {};
+  pending.promise = new Promise((resolve, reject) => {
+    chunkQueue.push(async () => {
+      try {
+        if (typeof DecompressionStream !== 'function') throw new Error('Update Chrome or Edge to open this compressed report.');
+        const { bytes, payload } = await new Promise((receive, fail) => {
+          const script = document.createElement('script');
+          let registered = false;
+          const cleanup = () => { clearTimeout(timer); pending.receive = null; script.remove(); };
+          const timer = setTimeout(() => { cleanup(); fail(new Error('Timed out loading report data.')); }, 30000);
+          pending.receive = value => { registered = true; cleanup(); receive(value); };
+          script.onload = () => { if (!registered) { cleanup(); fail(new Error('Invalid report data file.')); } };
+          script.onerror = () => { cleanup(); fail(new Error('Report data file is missing or could not be loaded.')); };
+          script.src = ref;
+          document.head.append(script);
+        });
+        const compressed = Uint8Array.from(atob(payload), character => character.charCodeAt(0));
+        const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
+        const decoded = await new Response(stream).arrayBuffer();
+        if (decoded.byteLength !== bytes) throw new Error('Report data length does not match its manifest.');
+        const value = JSON.parse(new TextDecoder().decode(decoded));
+        rememberChunk(ref, value, bytes);
+        resolve(value);
+      } catch (error) { reject(error); }
+      finally { pendingChunks.delete(ref); runningChunks--; pumpChunks(); }
+    });
+  });
+  pendingChunks.set(ref, pending);
+  pumpChunks();
+  return pending.promise;
+}
+function pumpChunks() {
+  while (runningChunks < 4 && chunkQueue.length) { runningChunks++; chunkQueue.shift()(); }
+}
+function loadError(root, error, retry) {
+  clear(root); root.setAttribute('aria-busy', 'false');
+  root.append(node('p', 'notice', error.message + ' Keep the HTML and its .data folder together. If the report was rebuilt, reload this page.'));
+  const button = node('button', '', 'Retry'); button.type = 'button'; button.onclick = retry; root.append(button);
+}
+function pagination(total, size, page, onPage, label) {
+  const pages = Math.max(1, Math.ceil(total / size)), nav = node('nav', 'pagination');
+  nav.setAttribute('aria-label', label + ' pages');
+  const previous = node('button', '', 'Previous'), next = node('button', '', 'Next');
+  previous.type = next.type = 'button'; previous.disabled = page === 0; next.disabled = page >= pages - 1;
+  previous.setAttribute('aria-label', 'Previous ' + label.toLowerCase() + ' page');
+  next.setAttribute('aria-label', 'Next ' + label.toLowerCase() + ' page');
+  previous.onclick = () => onPage(page - 1); next.onclick = () => onPage(page + 1);
+  const status = node('span', '', 'Page ' + (page + 1) + ' of ' + pages + ' · ' + total + ' ' + label.toLowerCase());
+  status.setAttribute('aria-live', 'polite'); nav.append(previous, status, next);
+  return nav;
+}
+const state = { run: DATA.combined ? -1 : 0, filter: 'all', view: 'report', entity: '', failureType: '', page: 0 };
+let runEpoch = 0, renderEpoch = 0;
 const failureType = check => check.failure_type || 'Unknown failure type';
-const matchesFailureType = item => !state.failureType || item.checks.some(check =>
-  check.status === 'failure' && failureType(check) === state.failureType);
 const currentRun = () => state.run === -1 ? DATA.combined : DATA.runs[state.run];
 function documentedResponseCoverage(run) {
   const rows = run.operations.flatMap(op => (op.response_coverage || []).map(response => ({ ...response, method: op.method, path: op.path })));
   if (!rows.length) return null;
   const covered = rows.filter(row => row.hits > 0).length;
+  const probes = new Set(run.operations.filter(op => op.method_probe).map(op => op.path));
   const uncovered = rows.filter(row => !row.hits).map(row => ({ ...row,
-    methodProbe: row.status === '405' && run.operations.some(op => op.path === row.path && op.cases.some(item =>
-      item.response_status === 405 && item.request?.method && item.request.method !== op.method)) }));
+    methodProbe: row.status === '405' && probes.has(row.path) }));
   return { covered, total: rows.length, percent: (100 * covered / rows.length).toFixed(2), uncovered };
 }
 const PHASES = ['examples', 'coverage', 'fuzzing', 'stateful'];
@@ -70,39 +115,18 @@ const STATUS = {
   not_executed: { label: 'Not executed', icon: '–', edge: '#454d58' },
   untested: { label: 'Not tested', icon: '–', edge: '#454d58' },
 };
-function checksOf(cases) { return cases.flatMap(item => item.checks); }
-function notExecuted(item) {
-  if (item.execution_status != null) return item.execution_status === 'not_executed';
-  return !item.checks.length && !item.verification && item.response_status == null && item.request == null && item.response == null;
-}
-function outcome(cases, tested = true, scenarios = []) {
-  cases = cases.filter(item => !notExecuted(item));
-  const checks = checksOf(cases);
-  if (checks.some(check => check.status === 'failure' && !check.exception)) return 'fail';
-  if (checks.some(check => !['success', 'failure'].includes(check.status)) ||
-      cases.some(item => (!item.checks.length && !item.verification) || item.response_status == null) ||
-      scenarios.some(item => ['error', 'failure'].includes(item.status)) && !checks.some(check => check.status === 'failure')) return 'neutral';
-  if (checks.some(check => check.status === 'failure')) return 'accepted';
-  return tested && (checks.length || cases.some(item => item.verification)) ? 'pass' : 'untested';
-}
+function notExecuted(item) { return item.execution_status === 'not_executed'; }
 function statusPill(kind) { return pill(STATUS[kind].label, ['untested', 'not_executed'].includes(kind) ? 'neutral' : kind); }
 function reportOperations(run) {
-  return run.operations.filter(op => op.expected || outcome(op.cases, op.tested, op.scenarios) !== 'pass' ||
-    !op.cases.length || !op.cases.every(item => item.checks.some(check => check.name === 'unsupported_method')));
-}
-function metrics(cases) {
-  const checks = checksOf(cases);
-  return { cases: cases.length, checks: checks.length, failed: checks.filter(x => x.status === 'failure' && !x.exception).length };
+  return run.operations.filter(op => !op.hidden_probe);
 }
 function lazyDetails(className, summary, render) {
   const details = node('details', className);
   details.append(summary);
-  let rendered = false;
+  let body = null;
   details.addEventListener('toggle', () => {
-    if (details.open && !rendered) {
-      rendered = true;
-      details.append(render());
-    }
+    if (details.open && !body) { body = render(); details.append(body); }
+    if (!details.open && body) { body.remove(); body = null; }
   });
   return details;
 }
@@ -113,20 +137,44 @@ function showView(view) {
   for (const name of ['report', 'trends']) $('tab-' + name).setAttribute('aria-current', name === view ? 'page' : 'false');
   if (view === 'trends') renderTrends();
 }
-function selectRun(index) {
+async function selectRun(index) {
+  const epoch = ++runEpoch;
+  ++renderEpoch;
+  const previous = currentRun();
+  if (previous) delete previous.operations;
   state.run = index;
   state.entity = '';
   state.filter = 'all';
   state.failureType = '';
+  state.page = 0;
   $('run-search').value = '';
   $('operation-search').value = '';
   $('run-picker').open = false;
+  for (const id of ['run-stats', 'run-notices', 'run-metadata', 'run-provenance', 'operations', 'entity-navigation', 'operation-pagination', 'operation-filters', 'failure-type-filter']) clear($(id));
+  $('failure-type-filter').hidden = true;
+  $('failure-type-select').disabled = true;
+  $('operation-result-count').textContent = 'Loading operations…';
+  const root = $('operations'); root.setAttribute('aria-busy', 'true');
   renderHeader();
-  renderRun();
-  if (state.view === 'trends') {
-    const run = DATA.runs[Math.max(0, state.run)];
-    $('trend-group').value = (run.configuration_id || 'Unspecified') + ' · ' + (run.base_url || 'Unspecified target');
-    renderTrends();
+  const run = currentRun();
+  try {
+    if (DATA.format_version !== 1) throw new Error('Unsupported report format. Regenerate this report.');
+    const operations = [];
+    for (const ref of run.operations_ref) {
+      const chunk = await loadChunk(ref);
+      if (epoch !== runEpoch) return;
+      for (const op of chunk) operations.push(op);
+    }
+    run.operations = operations;
+    root.setAttribute('aria-busy', 'false');
+    renderRun();
+    if (state.view === 'trends') {
+      const selected = DATA.runs[Math.max(0, state.run)];
+      $('trend-group').value = (selected.configuration_id || 'Unspecified') + ' · ' + (selected.base_url || 'Unspecified target');
+      renderTrends();
+    }
+  } catch (error) {
+    if (epoch === runEpoch) { $('operation-result-count').textContent = 'Operations unavailable'; loadError(root, error, () => selectRun(index)); }
   }
 }
 function renderHeader() {
@@ -210,11 +258,17 @@ function renderRun() {
     notes.append(node('p', 'notice', 'Documented response coverage: ' + coverage.percent + '% · ' + coverage.covered + '/' + coverage.total +
       ' unique method/path/status variants recorded by TraceCov.'));
     if (coverage.uncovered.length) {
-      const details = node('details', 'issues');
-      details.append(node('summary', '', 'Response variants without TraceCov coverage · ' + coverage.uncovered.length));
-      for (const response of coverage.uncovered) details.append(node('p', 'notice',
-        response.method + ' ' + response.path + ' → ' + response.status +
-        (response.methodProbe ? ' · 405 was observed on this URL by unsupported-method probes; TraceCov does not credit it to the declared operation.' : '')));
+      const details = lazyDetails('issues', node('summary', '', 'Response variants without TraceCov coverage · ' + coverage.uncovered.length), () => {
+        const content = node('div');
+        function showPage(page) {
+          content.replaceChildren(pagination(coverage.uncovered.length, 100, page, showPage, 'Response variants'));
+          for (const response of coverage.uncovered.slice(page * 100, (page + 1) * 100)) content.append(node('p', 'notice',
+            response.method + ' ' + response.path + ' → ' + response.status +
+            (response.methodProbe ? ' · 405 was observed on this URL by unsupported-method probes; TraceCov does not credit it to the declared operation.' : '')));
+        }
+        showPage(0);
+        return content;
+      });
       notes.append(details);
     }
   }
@@ -231,8 +285,7 @@ function renderRun() {
 }
 function renderFilters() {
   const select = $('failure-type-select');
-  const types = [...new Set(currentRun().operations.flatMap(op => checksOf(op.cases))
-    .filter(check => check.status === 'failure').map(failureType))].sort();
+  const types = Object.keys(currentRun().failure_types).sort();
   clear(select);
   for (const type of ['', ...types]) {
     const option = node('option', '', type || 'All failure types'); option.value = type; select.append(option);
@@ -251,7 +304,7 @@ function renderFilters() {
   const operations = reportOperations(currentRun()), root = $('operation-filters');
   clear(root);
   for (const [value,label] of [['all','All'],['fail','Failed'],['neutral','Incomplete'],['accepted','Accepted'],['untested','Not tested']]) {
-    const count = value === 'all' ? operations.length : operations.filter(op => outcome(op.cases,op.tested,op.scenarios) === value).length;
+    const count = value === 'all' ? operations.length : operations.filter(op => op.kind === value).length;
     const button = node('button','filter',label); button.type = 'button';
     button.setAttribute('data-count', String(count));
     button.setAttribute('aria-pressed',String(state.filter === value));
@@ -260,12 +313,15 @@ function renderFilters() {
     root.append(button);
   }
 }
-function renderOperations() {
+function renderOperations(page = 0) {
+  ++renderEpoch;
+  if (!currentRun().operations) return;
+  state.page = page;
   const root = $('operations'); clear(root);
   const run = currentRun(), query = $('operation-search').value.trim().toLowerCase();
   const operations = reportOperations(run);
-  const matched = operations.filter(op => (!state.failureType || op.cases.some(matchesFailureType)) &&
-    (state.filter === 'all' || outcome(op.cases,op.tested,op.scenarios) === state.filter) && [op.entity,op.method,op.path,op.summary].join(' ').toLowerCase().includes(query));
+  const matched = operations.filter(op => (!state.failureType || Object.hasOwn(op.failure_types, state.failureType)) &&
+    (state.filter === 'all' || op.kind === state.filter) && [op.entity,op.method,op.path,op.summary].join(' ').toLowerCase().includes(query));
   const groups = new Map();
   for (const op of matched) { if (!groups.has(op.entity)) groups.set(op.entity,[]); groups.get(op.entity).push(op); }
   const nav = $('entity-navigation'); clear(nav); nav.append(node('h2','','Entities'));
@@ -286,13 +342,21 @@ function renderOperations() {
   const hidden = run.operations.length - operations.length;
   $('operation-result-count').textContent = count + ' of ' + operations.length + ' operations · ' + visible.length + ' entities' +
     (hidden ? ' · ' + hidden + ' passing unsupported-method probes hidden' : '');
-  for (const [entity,ops] of visible) {
+  const flattened = visible.flatMap(([entity, ops]) => ops.map(op => ({ entity, op })));
+  state.page = Math.min(state.page, Math.max(0, Math.ceil(count / 100) - 1));
+  const pageGroups = new Map();
+  for (const { entity, op } of flattened.slice(state.page * 100, (state.page + 1) * 100)) {
+    if (!pageGroups.has(entity)) pageGroups.set(entity, []);
+    pageGroups.get(entity).push(op);
+  }
+  $('operation-pagination').replaceChildren(pagination(count, 100, state.page, renderOperations, 'Operations'));
+  for (const [entity,ops] of pageGroups) {
     const details = node('details','entity'); details.open = true;
     const summary = node('summary'), title = node('div','entity-title');
     title.append(node('h2','',entity),node('small','',ops.length + (ops.length === 1 ? ' operation' : ' operations')));
     const stats = node('div','entity-stats');
     for (const kind of ['fail','neutral','accepted','untested','pass']) {
-      const total = ops.filter(op => outcome(op.cases,op.tested,op.scenarios) === kind).length;
+      const total = ops.filter(op => op.kind === kind).length;
       if (total) stats.append(pill(total + ' ' + STATUS[kind].label.toLowerCase(),kind));
     }
     summary.append(title,stats);
@@ -313,15 +377,15 @@ function metric(label, value) {
   return item;
 }
 function renderOperation(op) {
-  const kind = outcome(op.cases, op.tested, op.scenarios), summary = node('summary');
-  summary.setAttribute('aria-label', op.method + ' ' + op.path + ', ' + STATUS[kind].label + ', ' + op.cases.length + ' cases');
+  const kind = op.kind, summary = node('summary');
+  summary.setAttribute('aria-label', op.method + ' ' + op.path + ', ' + STATUS[kind].label + ', ' + op.case_count + ' cases');
   const icon = node('span', 'status-icon ' + (kind === 'untested' ? 'neutral' : kind), STATUS[kind].icon);
   icon.setAttribute('aria-hidden', 'true');
   const method = node('span', 'method method-' + op.method.toLowerCase(), op.method || 'OTHER');
   const path = node('div', 'op-label');
   path.append(node('span', 'op-path', op.path));
   if (op.summary) path.append(node('p', 'op-description', op.summary));
-  const counts = metrics(op.cases), stats = node('span', 'op-metrics');
+  const counts = { cases: op.case_count, checks: op.check_count }, stats = node('span', 'op-metrics');
   stats.append(metric('Cases', counts.cases), metric('Checks', counts.checks));
   summary.append(icon, method, path, stats, statusPill(kind));
   const details = lazyDetails('operation', summary, () => renderPhases(op));
@@ -332,29 +396,64 @@ function renderOperation(op) {
 function renderPhases(op) {
   const body = node('div', 'operation-body');
   if (!op.expected) body.append(node('p', 'notice', 'This operation is outside the selected test scope.'));
-  const phases = [...new Set([...op.scenarios.map(x => x.phase || 'Unknown'), ...op.cases.map(x => x.phase || 'Unknown')])]
-    .sort((a, b) => (PHASES.includes(a) ? PHASES.indexOf(a) : 99) - (PHASES.includes(b) ? PHASES.indexOf(b) : 99) || a.localeCompare(b));
+  const phases = [...op.phases].sort((a, b) => (PHASES.includes(a.name) ? PHASES.indexOf(a.name) : 99) -
+    (PHASES.includes(b.name) ? PHASES.indexOf(b.name) : 99) || a.name.localeCompare(b.name));
   for (const phase of phases) {
-    const scenarios = op.scenarios.filter(x => (x.phase || 'Unknown') === phase), cases = op.cases.filter(x => (x.phase || 'Unknown') === phase);
-    const kind = outcome(cases, cases.length > 0, scenarios);
-    if (state.filter !== 'all' && kind !== state.filter) continue;
-    const visibleCases = cases.filter(item => matchesFailureType(item) && (state.filter === 'all' || outcome([item]) === state.filter));
-    if (state.failureType && !visibleCases.length) continue;
-    const summary = node('summary'), counts = metrics(cases);
-    const skipped = !cases.length && scenarios.length && scenarios.every(item => item.status === 'skip');
-    summary.append(node('span', 'phase-name', phase), node('span', 'muted', counts.cases + ' cases · ' + counts.checks + ' checks'), skipped ? pill('Skipped') : statusPill(kind));
-    const details = lazyDetails('phase', summary, () => {
-      const content = node('div', 'phase-body');
-      for (const scenario of scenarios.filter(x => !state.failureType && x.status === 'skip')) content.append(node('p', 'notice', (scenario.source ? scenario.source.configuration_id + ' · ' : '') + 'Skipped: ' + (scenario.skip_reason || 'No reason recorded')));
-      for (const item of visibleCases) content.append(renderCase(item));
-      if (!cases.length) content.append(node('p', 'empty', 'No observed cases in this phase.'));
-      return content;
-    });
-    if (state.failureType) details.open = true;
-    body.append(details);
+    if (state.filter !== 'all' && phase.kind !== state.filter) continue;
+    if (state.failureType && !Object.hasOwn(phase.failure_types, state.failureType)) continue;
+    const summary = node('summary');
+    const skipped = !phase.case_count && phase.scenarios.length && phase.scenarios.every(item => item.status === 'skip');
+    summary.append(node('span', 'phase-name', phase.name), node('span', 'muted', phase.case_count + ' cases · ' + phase.check_count + ' checks'),
+      skipped ? pill('Skipped') : statusPill(phase.kind));
+    body.append(lazyDetails('phase', summary, () => renderCasePages(phase)));
   }
   if (!phases.length) body.append(node('p', 'empty', 'No phases or cases recorded for this operation.'));
   return body;
+}
+function indexMatches(index, filter, type) {
+  if (type) return index.types[type]?.[filter] || 0;
+  return filter === 'all' ? index.count : index.kinds[filter] || 0;
+}
+function renderCasePages(phase) {
+  const root = node('div', 'phase-body'), notices = node('div'), content = node('div'), controls = node('div');
+  const filter = state.filter, type = state.failureType, epoch = renderEpoch;
+  let request = 0;
+  for (const scenario of phase.scenarios.filter(item => !type && item.status === 'skip')) notices.append(node('p', 'notice',
+    (scenario.source ? scenario.source.configuration_id + ' · ' : '') + 'Skipped: ' + (scenario.skip_reason || 'No reason recorded')));
+  root.append(notices, controls, content);
+  const total = phase.indexes.reduce((sum, index) => sum + indexMatches(index, filter, type), 0);
+  async function showPage(page) {
+    const ticket = ++request;
+    clear(content); content.setAttribute('aria-busy', 'true');
+    content.append(node('p', 'muted', 'Loading cases…'));
+    controls.replaceChildren(pagination(total, 50, page, showPage, 'Cases'));
+    try {
+      let skip = page * 50;
+      const visible = [];
+      for (const index of phase.indexes) {
+        const count = indexMatches(index, filter, type);
+        if (!count) continue;
+        if (skip >= count) { skip -= count; continue; }
+        const cases = await loadChunk(index.ref);
+        if (epoch !== renderEpoch || ticket !== request || !root.isConnected) return;
+        for (const item of cases) {
+          if ((filter !== 'all' && item.kind !== filter) || (type && !item.failure_types.includes(type))) continue;
+          if (skip) { skip--; continue; }
+          visible.push(item);
+          if (visible.length === 50) break;
+        }
+        if (visible.length === 50) break;
+      }
+      if (epoch !== renderEpoch || ticket !== request || !root.isConnected) return;
+      clear(content); content.setAttribute('aria-busy', 'false');
+      for (const item of visible) content.append(renderCase(item));
+      if (!visible.length) content.append(node('p', 'empty', phase.case_count ? 'No cases match this filter.' : 'No observed cases in this phase.'));
+    } catch (error) {
+      if (epoch === renderEpoch && ticket === request && root.isConnected) loadError(content, error, () => showPage(page));
+    }
+  }
+  queueMicrotask(() => showPage(0));
+  return root;
 }
 function compactCheck(check) {
   const kind = check.status === 'failure' ? (check.exception ? 'accepted' : 'fail') : check.status === 'success' ? 'pass' : 'neutral';
@@ -422,9 +521,26 @@ function renderExchange(label,data) {
 }
 function renderCase(item) {
   const summary = node('summary');
-  summary.append(node('span','case-id','Case ' + (item.case_id || 'unknown')),node('span','muted','HTTP ' + (item.response_status ?? 'unknown') + ' · ' + item.checks.length + ' checks'),statusPill(notExecuted(item) ? 'not_executed' : outcome([item])));
-  if (item.source) summary.append(pill(item.source.configuration_id));
-  return lazyDetails('case',summary,() => {
+  summary.append(node('span','case-id','Case ' + (item.case_id || 'unknown')),node('span','muted','HTTP ' + (item.response_status ?? 'unknown') + ' · ' + item.check_count + ' checks'),statusPill(notExecuted(item) ? 'not_executed' : item.kind));
+  const source = currentRun().combined ? DATA.runs.find(run => run.id === item.source_run) : null;
+  if (source) summary.append(pill(source.configuration_id));
+  return lazyDetails('case', summary, () => {
+    const root = node('div', 'case-loading'), epoch = renderEpoch;
+    async function show() {
+      clear(root); root.setAttribute('aria-busy', 'true'); root.append(node('p', 'muted', 'Loading evidence…'));
+      try {
+        const records = await loadChunk(item.detail_ref);
+        if (epoch !== renderEpoch || !root.isConnected) return;
+        const record = records.find(value => value.uid === item.uid);
+        if (!record) throw new Error('Case evidence was not found in its data file.');
+        root.replaceChildren(renderCaseBody({ ...record, source })); root.setAttribute('aria-busy', 'false');
+      } catch (error) { if (epoch === renderEpoch && root.isConnected) loadError(root, error, show); }
+    }
+    queueMicrotask(show);
+    return root;
+  });
+}
+function renderCaseBody(item) {
     const body = node('div','case-body compact-case');
     if (item.source) body.append(node('p', 'notice', 'Source: ' + item.source.configuration_id + ' · ' + item.source.build_number));
     if(notExecuted(item)) body.append(node('p','notice','No HTTP interaction or check results recorded. This generated case is classified as not executed and earns no pass or coverage credit.'));
@@ -452,7 +568,6 @@ function renderCase(item) {
     const title = node('div','evidence-heading'); title.append(node('h3','','HTTP exchange'),node('span','muted','Request and response'));
     const exchange = node('div','exchange'); exchange.append(renderExchange('Request',item.request),renderExchange('Response',item.response));
     evidence.append(title,exchange); body.append(evidence); return body;
-  });
 }
 
 function trendGroups() {
@@ -466,11 +581,7 @@ function trendGroups() {
 }
 const trendCharts = new Set();
 function operationCounts(run) {
-  const observed = run.operations.filter(op => op.tested);
-  const statuses = observed.map(op => outcome(op.cases, op.tested, op.scenarios));
-  return { observed: observed.length,
-    passed: statuses.filter(status => ['pass', 'accepted'].includes(status)).length,
-    failed: statuses.filter(status => status === 'fail').length };
+  return run.operation_counts;
 }
 function tooltipDate(value) {
   const date = new Date(value);
@@ -489,10 +600,13 @@ function passedChange(current, previous) {
     description: 'Passed or accepted ratio ' + (delta > 0 ? 'increased' : 'decreased') + ' by ' + difference + ' percentage points vs previous run' };
 }
 function chart(runs, series, label, { stacked = false } = {}) {
-  function openSegment(index, datasetIndex) {
+  async function openSegment(index, datasetIndex) {
     if (!stacked || !series[datasetIndex]?.values[index]) return;
     showView('report');
-    selectRun(DATA.runs.indexOf(runs[index]));
+    const selection = selectRun(DATA.runs.indexOf(runs[index]));
+    const epoch = runEpoch;
+    await selection;
+    if (epoch !== runEpoch || !currentRun().operations) return;
     state.failureType = series[datasetIndex].label;
     renderFilters(); renderOperations();
     $('failure-type-filter').querySelectorAll('button')[0].focus();
@@ -618,18 +732,7 @@ function chart(runs, series, label, { stacked = false } = {}) {
   return container;
 }
 function failureTypeBreakdown(runs) {
-  const counts = runs.map(run => {
-    const types = new Map();
-    for (const operation of run.operations) for (const testCase of operation.cases) for (const check of testCase.checks) {
-      if (check.status !== 'failure') continue;
-      const type = failureType(check);
-      const count = types.get(type) || { total: 0, accepted: 0 };
-      count.total++;
-      if (check.exception) count.accepted++;
-      types.set(type, count);
-    }
-    return types;
-  });
+  const counts = runs.map(run => new Map(Object.entries(run.failure_types)));
   const types = [...new Set(counts.flatMap(count => [...count.keys()]))].sort();
   const panel = node('section', 'panel failure-types-panel');
   const heading = node('div', 'history-heading');
@@ -730,7 +833,7 @@ function renderTrends() {
 $('older-run').onclick = () => selectRun(state.run + 1);
 $('newer-run').onclick = () => selectRun(state.run - 1);
 $('run-search').oninput = renderRunOptions;
-$('operation-search').oninput = renderOperations;
+$('operation-search').oninput = () => renderOperations();
 $('tab-report').onclick = () => showView('report');
 $('tab-trends').onclick = () => showView('trends');
 $('trend-group').onchange = renderTrends;
@@ -755,6 +858,5 @@ const compactViewport = matchMedia('(max-width:767px)');
 const syncRunContext = () => { $('run-context').open = !compactViewport.matches; };
 compactViewport.addEventListener('change', syncRunContext);
 syncRunContext();
-renderHeader();
-renderRun();
 showView('report');
+window.reportReady = selectRun(state.run);

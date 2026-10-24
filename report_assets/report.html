@@ -58,6 +58,7 @@
       <p id="operation-result-count" class="result-count" aria-live="polite"></p>
       <div id="failure-type-filter" class="failure-type-filter" hidden></div>
       <div class="results-layout"><nav id="entity-navigation" class="entity-nav" aria-label="Filter by entity"></nav><div id="operations"></div></div>
+      <div id="operation-pagination"></div>
       <details class="notes"><summary>Run provenance</summary><div id="run-provenance" class="metadata"></div></details>
     </section>
     <section id="trends" aria-label="Run trends" hidden>
@@ -72,6 +73,7 @@
     <details class="notes">
       <summary>About this report · __RUN_COUNT__ runs · Generated <time id="generated-time" datetime="__GENERATED__">__GENERATED__</time></summary>
       <p>HTTP details are sanitized on a best-effort basis. Treat this report as sensitive test evidence. Coverage detail remains in the companion TraceCov HTML when available.</p>
+      <p>Keep this HTML and its companion .data directory together. Extract the complete folder before opening the report. Case evidence loads only when opened; use the page controls to browse large result sets.</p>
       <div id="warnings"></div>
     </details>
   </main>

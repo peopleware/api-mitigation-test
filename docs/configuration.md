@@ -320,17 +320,18 @@ is disabled. This option has no effect when `coverage_enabled` is false.
 **Type:** string. **Default:** `full`.
 
 - `full`: retain all generated output, subject to `coverage_enabled` and `coverage_html`.
-- `essentials`: retain the per-run SQLite evidence database and the main HTML report after successful report generation.
+- `essentials`: retain the per-run SQLite evidence database and the main report bundle (HTML and companion data directory) after successful report generation.
 
 `output_mode` accepts `full` (the default) or `essentials`. To retain only the
-per-run SQLite database and the main HTML report:
+per-run SQLite database and the main report bundle:
 
 ```yaml
 output_mode: essentials
 ```
 
-The runner writes `evidence.sqlite` in the build directory and `report.html` at
-the output root. Once both are written, it removes intermediate reports, JUnit,
+The runner writes `evidence.sqlite` in the build directory and `report.html` plus
+`report.data/` at the output root. Keep the HTML and data directory together.
+Once the database and complete report bundle are written, it removes intermediate reports, JUnit,
 the console log, the standalone verdict, and generated Schemathesis configuration.
 The verdict, checks, sanitized HTTP exchanges, and any coverage measurements remain
 in SQLite; the main report can be rebuilt from it. The separate TraceCov HTML

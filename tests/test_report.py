@@ -1,4 +1,6 @@
 import json
+import base64
+import gzip
 import os
 from pathlib import Path
 import re
@@ -6,6 +8,7 @@ import sqlite3
 import shutil
 import subprocess
 import sys
+from urllib.parse import unquote
 
 import pytest
 
@@ -35,11 +38,36 @@ def make_database(folder: Path, name: str, started: str, *, failed: bool = False
     return path
 
 
-def embedded_data(path: Path) -> dict:
+def report_manifest(path: Path) -> dict:
     html = path.read_text(encoding="utf-8")
     match = re.search(r'<script id="report-data" type="application/json">(.*?)</script>', html, re.S)
     assert match
     return json.loads(match.group(1))
+
+
+def read_chunk(path: Path, ref: str):
+    script = (path.parent / unquote(ref)).read_text(encoding="utf-8")
+    arguments = json.loads("[" + script.removeprefix("window.reportChunk(").strip().removesuffix(");") + "]")
+    assert arguments[0] == ref
+    raw = gzip.decompress(base64.b64decode(arguments[2]))
+    assert len(raw) == arguments[1]
+    return json.loads(raw)
+
+
+def embedded_data(path: Path) -> dict:
+    """Reconstruct small test bundles to retain full evidence assertions."""
+    data = report_manifest(path)
+    for run in [*data["runs"], *([data["combined"]] if data["combined"] else [])]:
+        run["operations"] = [op for ref in run["operations_ref"] for op in read_chunk(path, ref)]
+        for operation in run["operations"]:
+            cases = []
+            for phase in operation["phases"]:
+                for index in phase["indexes"]:
+                    for summary in read_chunk(path, index["ref"]):
+                        records = read_chunk(path, summary["detail_ref"])
+                        cases.append(next(record for record in records if record["uid"] == summary["uid"]))
+            operation["cases"] = cases
+    return data
 
 
 def test_combined_report_preserves_source_runs_and_rejects_incompatible_targets(tmp_path):
@@ -240,12 +268,22 @@ def test_report_embeds_offline_chartjs(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="UI interaction test requires Node.js")
-def test_report_run_navigation_and_nested_disclosures(tmp_path):
+@pytest.mark.parametrize("combine_runs", [False, True])
+def test_report_run_navigation_and_nested_disclosures(tmp_path, combine_runs):
     make_database(tmp_path / "old", "older", "2026-01-01T00:00:00+00:00")
-    make_database(tmp_path / "new", "newer", "2026-02-01T00:00:00+00:00", failed=True,
-                  schema={"paths": {"/items": {"get": {"tags": ["Inventory"]}}}})
+    database = make_database(tmp_path / "new", "newer", "2026-02-01T00:00:00+00:00", failed=True,
+                             schema={"paths": {"/items": {"get": {"tags": ["Inventory"]}}}})
+    with sqlite3.connect(database) as db:
+        for index in range(1, 121):
+            cursor = db.execute("INSERT INTO observation (build_id,operation_id,case_id,phase,response_status,execution_status) VALUES (1,1,?,'fuzzing',200,'executed')", (f"copy-{index}",))
+            accepted = index == 120
+            db.execute("INSERT INTO check_result (observation_id,name,status,failure_type,exception_json) VALUES (?,?,?,?,?)",
+                       (cursor.lastrowid, "status_code_conformance", "failure" if accepted else "success",
+                        "BadResponse" if accepted else None, '{"reason":"accepted"}' if accepted else None))
+        db.executemany("INSERT INTO operation (build_id,method,path,expected,tested) VALUES (1,'GET',?,1,0)",
+                       [(f"/items/paged-{index:03}",) for index in range(104)])
     output = tmp_path / "report.html"
-    generate_report(tmp_path, output)
+    generate_report(tmp_path, output, combine_runs=combine_runs)
     root = Path(__file__).resolve().parents[1]
     subprocess.run([shutil.which("node"), str(root / "tests/report_ui.test.cjs"), str(output),
                     str(root / "report_assets/app.js")], check=True, capture_output=True, text=True)
@@ -278,3 +316,124 @@ def test_report_payload_cannot_close_script(tmp_path):
     html = output.read_text(encoding="utf-8")
     assert "</script><script>alert(1)" not in html
     assert embedded_data(output)["runs"][0]["build_number"] == "</script><script>alert(1)</script>"
+
+
+def test_bundle_chunks_preserve_all_evidence_and_local_case_ids(tmp_path, monkeypatch):
+    import report
+
+    monkeypatch.setattr(report, "CHUNK_BYTES", 2000)
+    monkeypatch.setattr(report, "INDEX_CASES", 2)
+    for name in ("first", "second"):
+        database = make_database(tmp_path / name, name, "2026-01-01T00:00:00+00:00")
+        with sqlite3.connect(database) as db:
+            for index in range(8):
+                cursor = db.execute("INSERT INTO observation (build_id,operation_id,case_id,phase,response_status,execution_status) VALUES (1,1,?,'fuzzing',200,'executed')", (f"duplicate-{index}",))
+                db.execute("INSERT INTO check_result (observation_id,name,status) VALUES (?,'check','success')", (cursor.lastrowid,))
+    output = tmp_path / "custom name.html"
+    generate_report(tmp_path, output, combine_runs=True)
+    manifest = report_manifest(output)
+    assert manifest["format_version"] == 1
+    assert "operations" not in manifest["runs"][0]
+    assert output.stat().st_size < 1_000_000
+    reconstructed = embedded_data(output)
+    combined = reconstructed["combined"]["operations"][0]
+    assert len(combined["cases"]) == 18
+    assert len({case["uid"] for case in combined["cases"]}) == 18
+    assert len(combined["phases"][0]["indexes"]) == 10
+    for run in reconstructed["runs"]:
+        actual = [{key: value for key, value in case.items() if key != "uid"} for case in run["operations"][0]["cases"]]
+        expected = report.load_database(tmp_path / run["build_number"] / "evidence.sqlite", output)[0]["operations"][0]["cases"]
+        assert actual == expected
+        for index in run["operations"][0]["phases"][0]["indexes"]:
+            assert len(read_chunk(output, index["ref"])) <= 2
+    assert all(ref.startswith("custom%20name.data/") for ref in manifest["runs"][0]["operations_ref"])
+
+
+@pytest.mark.parametrize("status,response,exception,verification,expected", [
+    ("success", 200, None, None, "pass"),
+    ("failure", 200, None, None, "fail"),
+    ("failure", 200, {}, None, "accepted"),
+    ("failure", None, {"reason": "accepted"}, None, "neutral"),
+    ("unknown", 200, None, None, "neutral"),
+    (None, 200, None, None, "neutral"),
+    (None, 200, None, {}, "pass"),
+])
+def test_precomputed_classification_preserves_browser_semantics(tmp_path, status, response, exception, verification, expected):
+    database = make_database(tmp_path / "run", "classified", "2026-01-01T00:00:00Z")
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE observation SET response_status=?, verification_json=?", (response, json.dumps(verification) if verification is not None else None))
+        if status is None:
+            db.execute("DELETE FROM check_result")
+        else:
+            db.execute("UPDATE check_result SET status=?, exception_json=?", (status, json.dumps(exception) if exception is not None else None))
+    output = tmp_path / "report.html"
+    generate_report(tmp_path, output)
+    run = embedded_data(output)["runs"][0]
+    assert run["operations"][0]["kind"] == expected
+    assert run["operation_counts"]["passed"] == int(expected in ("pass", "accepted"))
+
+
+def test_atomic_publication_and_owned_data_cleanup(tmp_path, monkeypatch):
+    database = make_database(tmp_path / "run", "first", "2026-01-01T00:00:00Z")
+    output = tmp_path / "report.html"
+    generate_report(tmp_path, output)
+    original_html = output.read_bytes()
+    original_data = {file: file.read_bytes() for file in output.with_suffix(".data").rglob("*") if file.is_file()}
+    # An unsuccessful publication must not orphan the old HTML's dependencies.
+    original_replace = Path.replace
+    def fail_html_replace(source, target):
+        if Path(target) == output:
+            raise OSError("interrupted publication")
+        return original_replace(source, target)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", fail_html_replace)
+        with pytest.raises(OSError, match="interrupted publication"):
+            generate_report(tmp_path, output)
+    assert output.read_bytes() == original_html
+    assert all(file.read_bytes() == value for file, value in original_data.items())
+    assert {file for file in output.with_suffix(".data").rglob("*") if file.is_file()} == set(original_data)
+    assert not list(tmp_path.glob(".report-*"))
+    unrelated = output.with_suffix(".data") / "user-notes.txt"
+    unrelated.write_text("keep me")
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE build SET build_number='replacement'")
+    generate_report(tmp_path, output)
+    assert embedded_data(output)["runs"][0]["build_number"] == "replacement"
+    assert unrelated.read_text() == "keep me"
+    assert all(not file.exists() for file in original_data)
+
+
+def test_unlinked_cases_and_scenarios_remain_inspectable(tmp_path):
+    database = make_database(tmp_path / "run", "unlinked", "2026-01-01T00:00:00Z")
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE observation SET operation_id=NULL")
+        db.execute("UPDATE scenario SET operation_id=NULL")
+    output = tmp_path / "report.html"
+    generate_report(tmp_path, output)
+    run = embedded_data(output)["runs"][0]
+    assert run["case_count"] == run["check_count"] == 1
+    assert run["operations"][-1]["path"] == "Unlinked evidence"
+    assert run["operations"][-1]["cases"][0]["checks"][0]["status"] == "success"
+    assert len(run["operations"][-1]["scenarios"]) == 2
+
+
+def test_windows_publication_retries_transient_file_locks(tmp_path, monkeypatch):
+    import report
+
+    if os.name != "nt":
+        pytest.skip("Windows file-lock retry")
+    source = tmp_path / "stage"
+    source.write_text("complete")
+    destination = tmp_path / "published"
+    original_replace = Path.replace
+    calls = []
+    def locked_once(path, target):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError("scanner holds a new file")
+        return original_replace(path, target)
+    monkeypatch.setattr(Path, "replace", locked_once)
+    monkeypatch.setattr(report.time, "sleep", lambda _: None)
+    report.publish_path(source, destination)
+    assert destination.read_text() == "complete"
+    assert len(calls) == 2

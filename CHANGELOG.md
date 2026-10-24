@@ -15,6 +15,11 @@
   YAML/JSON file, while retaining discovery of existing `/app/schemathesis.toml`
   mounts. Validate custom files before loading the target schema and preserve
   relative dictionary-file paths in merged artifacts.
+- Prevent browser freezes in large evidence reports with compressed
+  companion data, on-demand case loading, paginated results, and bounded
+  caching. Stream report generation while preserving every recorded case,
+  check, and sanitized HTTP exchange. Keep the HTML and its matching `.data/`
+  directory together when copying or archiving reports.
 
 ## 1.1.1
 

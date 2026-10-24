@@ -498,7 +498,7 @@ def run(tmp_path, server, *, fmt="json", local=False, exceptions=None, threshold
         else:
             command = [shell, shell_path(ROOT / "bitbucket-pipe/run.sh"), "--config", shell_path(path)]
     proc = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
-    dirs = [p for p in (tmp_path / "out").iterdir() if p.is_dir()] if (tmp_path / "out").exists() else []
+    dirs = [p for p in (tmp_path / "out").iterdir() if p.is_dir() and p.name != "report.data"] if (tmp_path / "out").exists() else []
     return proc, (dirs[0] if dirs else None)
 
 
@@ -666,8 +666,9 @@ def test_essentials_output_retains_only_database_and_main_report(tmp_path, serve
         settings["min_operation_coverage"] = 0
     proc, out = run(tmp_path, server, exceptions=[] if unexplained else [EXCEPTION], thresholds=settings)
     assert proc.returncode == int(unexplained), proc.stdout + proc.stderr
-    assert {path.relative_to(out.parent).as_posix() for path in out.parent.rglob("*") if path.is_file()} == {
-        f"{out.name}/evidence.sqlite", "report.html"}
+    assert {path.name for path in out.iterdir() if path.is_file()} == {"evidence.sqlite"}
+    assert {path.name for path in out.parent.iterdir()} == {out.name, "report.html", "report.data"}
+    assert list((out.parent / "report.data").rglob("*.js"))
     with sqlite3.connect(out / "evidence.sqlite") as db:
         verdict = json.loads(db.execute("SELECT verdict_json FROM build").fetchone()[0])
         assert verdict["passed"] == (not unexplained)
@@ -744,7 +745,7 @@ def test_processing_failure_retains_events_until_database_written(tmp_path, serv
         monkeypatch.setattr(runner, failure_site, fail)
     assert runner.main() == (0 if failure_site == "report" else 2)
     assert "injected processing failure" in capsys.readouterr().err
-    out, = (path for path in (tmp_path / "out").iterdir() if path.is_dir())
+    out, = (path for path in (tmp_path / "out").iterdir() if path.is_dir() and path.name != "report.data")
     assert (out / "events.ndjson").exists() == (failure_site != "report" or output_mode == "essentials")
     if output_mode == "essentials":
         assert (out / "console.log").stat().st_size
@@ -860,7 +861,15 @@ def test_selected_operations_respect_read_only(tmp_path, server, path):
     assert "excluded by read_only" in (out / "runner-error.json").read_text()
 
 
-def test_build_inference_and_auth(tmp_path, server):
+@pytest.mark.parametrize("report_first", [False, True])
+def test_build_inference_and_auth(tmp_path, server, monkeypatch, report_first):
+    iterdir = Path.iterdir
+
+    def ordered_iterdir(path):
+        # Filesystems may list the report assets before or after the build directory.
+        return iter(sorted(iterdir(path), key=lambda child: (child.name == "report.data") != report_first))
+
+    monkeypatch.setattr(Path, "iterdir", ordered_iterdir)
     proc, out = run(tmp_path, server, build_env={"GITHUB_ACTIONS": "true", "GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "2"})
     assert proc.returncode == 0, proc.stdout
     assert json.loads((out / "verdict.json").read_text())["build"]["build_id"] == "github-71-2"
